@@ -14,6 +14,7 @@ fail schema validation, and the harness fails if it does not.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 import time
@@ -22,6 +23,8 @@ from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from dotenv import load_dotenv  # noqa: E402
 
 from src.graph.builder import build_graph  # noqa: E402
 from src.graph.state import initial_state  # noqa: E402
@@ -104,6 +107,10 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
 
+    # The supervisor loads .env; this harness has to as well, or a
+    # --generator claude sweep fails eleven times with an auth error.
+    load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
+
     parser = argparse.ArgumentParser(prog="evals", description=__doc__)
     parser.add_argument("--analyzer", choices=["stub", "dart"], default="stub")
     parser.add_argument("--generator", choices=["template", "fixture", "claude"], default="template")
@@ -114,6 +121,14 @@ def main(argv: list[str] | None = None) -> int:
                              "(requires the Flutter SDK)")
     parser.add_argument("--filter", default="", help="only run PRDs whose name contains this")
     args = parser.parse_args(argv)
+
+    if args.generator == "claude" and not os.getenv("ANTHROPIC_API_KEY"):
+        print(
+            "error: --generator claude needs ANTHROPIC_API_KEY (set it in .env). "
+            "Failing now rather than once per PRD.",
+            file=sys.stderr,
+        )
+        return 2
 
     prds = [p for p in collect_prds() if args.filter in p.stem]
     if not prds:
