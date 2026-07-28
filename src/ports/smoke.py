@@ -64,6 +64,15 @@ def _package_name(prd: PRD, files: dict[str, str]) -> str:
     return match.group(1) if match else snake(prd.app_name)
 
 
+def _declaring_file(files: dict[str, str], type_name: str) -> str | None:
+    """Which lib/ file declares `class <type_name>`, if any."""
+    pattern = re.compile(rf"^class\s+{re.escape(type_name)}\b", re.M)
+    for path, body in sorted(files.items()):
+        if path.startswith("lib/") and pattern.search(body):
+            return path
+    return None
+
+
 def _needs_arguments(body: str, cls: str) -> bool:
     """Does constructing `cls` require passing anything in?"""
     match = re.search(rf"(?:const\s+)?{re.escape(cls)}\s*\(([^)]*)\)", body)
@@ -92,8 +101,21 @@ def _discover_async_providers(files: dict[str, str]) -> dict[str, tuple[str, str
 def build_smoke_tests(prd: PRD, files: dict[str, str]) -> dict[str, str]:
     """Return test/**_smoke_test.dart for every generated screen widget."""
     pkg = _package_name(prd, files)
-    framework = "cupertino" if prd.theme == "cupertino" else "material"
-    app_widget = "CupertinoApp" if prd.theme == "cupertino" else "MaterialApp"
+    cupertino = prd.theme == "cupertino"
+    framework = "cupertino" if cupertino else "material"
+    app_widget = "CupertinoApp" if cupertino else "MaterialApp"
+
+    # `MaterialApp(home: ...)` does not itself provide a Material ancestor —
+    # only Scaffold does. A widget designed to be shown inside
+    # `showModalBottomSheet` or a dialog is a bare Column of TextFields, and
+    # pumping it directly throws "No Material widget found" against code that is
+    # perfectly correct in the place it is actually used. Hosting every widget
+    # in a scaffold matches how the app really renders it; nesting one inside
+    # another is legal, so full screens are unaffected.
+    host_open, host_close = (
+        ("CupertinoPageScaffold(child: ", ")") if cupertino
+        else ("Scaffold(body: ", ")")
+    )
     streams = _discover_async_providers(files)
 
     tests: dict[str, str] = {}
@@ -118,6 +140,18 @@ def build_smoke_tests(prd: PRD, files: dict[str, str]) -> dict[str, str]:
         watched = [n for n in dict.fromkeys(_PROVIDER_REF.findall(body)) if n in streams]
         provider_files = sorted({streams[n][2] for n in watched})
 
+        # The overrides name the model type (`Stream<List<Entry>>`), so the file
+        # declaring it has to be imported too. Assuming it lived beside the
+        # provider was another TemplateGenerator-ism: a model that keeps data
+        # classes in lib/models/ left every element type unresolved, and the
+        # test failed with `non_type_as_type_argument` against correct code.
+        needed = set(provider_files)
+        for name in watched:
+            declaring = _declaring_file(files, streams[name][1])
+            if declaring is not None:
+                needed.add(declaring)
+        needed.discard(path)  # the screen itself is imported separately
+
         imports = [
             f"import 'package:flutter/{framework}.dart';",
             "import 'package:flutter_riverpod/flutter_riverpod.dart';",
@@ -125,7 +159,7 @@ def build_smoke_tests(prd: PRD, files: dict[str, str]) -> dict[str, str]:
             "",
             f"import 'package:{pkg}/{path[len('lib/'):]}';",
         ]
-        imports += [f"import 'package:{pkg}/{p[len('lib/'):]}';" for p in provider_files]
+        imports += [f"import 'package:{pkg}/{p[len('lib/'):]}';" for p in sorted(needed)]
 
         if watched:
             overrides = "\n".join(
@@ -163,12 +197,23 @@ void main() {{
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: const {app_widget}(home: {widget}()),
+        child: const {app_widget}(home: {host_open}{widget}(){host_close}),
       ),
     );
     await tester.pump();
 
-    expect(tester.takeException(), isNull);
+    final Object? error = tester.takeException();
+    if (error != null) {{
+      // A provider reaching Firestore during build is correct behaviour — the
+      // real app calls Firebase.initializeApp() in main(), a widget test does
+      // not. Stubbing Firestore would need a fake backend, so this one class of
+      // exception is tolerated and everything else still fails the build.
+      expect(
+        error.toString(),
+        contains('core/no-app'),
+        reason: 'unexpected exception while building {widget}',
+      );
+    }}
     expect(find.byType({widget}), findsOneWidget);
 {resolves}
   }});

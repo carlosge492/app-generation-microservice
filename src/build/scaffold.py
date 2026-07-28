@@ -52,6 +52,7 @@ def ensure_android_scaffold(
                 str(staging),
             ],
             capture_output=True, text=True, check=False,
+            encoding="utf-8", errors="replace",  # see analyzer.py
         )
         if proc.returncode != 0:
             raise RuntimeError(

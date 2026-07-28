@@ -48,10 +48,17 @@ class FlutterTestRunner:
         proc = subprocess.run(
             [self._tool(), "test", "--reporter", "compact"],
             cwd=project_dir, capture_output=True, text=True, check=False,
+            # Flutter emits UTF-8; Windows would otherwise decode with cp1252,
+            # and a single undecodable byte kills subprocess's reader thread,
+            # leaving stdout as None. That surfaced as
+            # "TypeError: unsupported operand type(s) for +: 'NoneType' and
+            # 'str'" five PRDs into a sweep, nowhere near the real cause.
+            encoding="utf-8", errors="replace",
         )
         if proc.returncode == 0:
             return []
-        return _parse_runner_output(proc.stdout + "\n" + proc.stderr, project_dir)
+        combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        return _parse_runner_output(combined, project_dir)
 
 
 def _parse_runner_output(output: str, project_dir: Path) -> list[Diagnostic]:

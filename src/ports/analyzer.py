@@ -256,6 +256,12 @@ class FlutterAnalyzer:
         proc = subprocess.run(
             [self._tool("flutter"), "analyze", "--no-congratulate"],
             cwd=project_dir, capture_output=True, text=True, check=False,
+            # Flutter emits UTF-8; Windows would otherwise decode with cp1252,
+            # and a single undecodable byte kills subprocess's reader thread,
+            # leaving stdout as None. That surfaced as
+            # "TypeError: unsupported operand type(s) for +: 'NoneType' and
+            # 'str'" five PRDs into a sweep, nowhere near the real cause.
+            encoding="utf-8", errors="replace",
         )
         # 0 = clean, 1 = issues found. Anything else is the tool itself failing
         # (unresolvable dependencies, an unparseable pubspec, no network).
@@ -266,7 +272,7 @@ class FlutterAnalyzer:
             )
 
         out: list[Diagnostic] = []
-        for line in proc.stdout.splitlines():
+        for line in (proc.stdout or "").splitlines():
             parsed = self._parse_line(line, project_dir)
             if parsed is not None:
                 out.append(parsed)

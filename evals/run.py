@@ -94,6 +94,17 @@ def regrade_one(prd_path: Path, out_dir: Path, analyzer, runner) -> Result:
     """
     name = prd_path.stem.replace(".prd", "")
     started = time.time()
+
+    # Negative cases never produce output — they are supposed to be rejected by
+    # the schema — so judge them the same way a real sweep does.
+    if prd_path.name.startswith("invalid_"):
+        try:
+            load_prd(prd_path)
+        except Exception as exc:
+            first = str(exc).strip().splitlines()[0][:70]
+            return Result(name, True, f"rejected as expected: {first}", 0.0)
+        return Result(name, False, "expected validation to fail, but it passed", 0.0)
+
     if not (out_dir / "lib").exists():
         return Result(name, False, "no generated output on disk to regrade", 0.0)
 

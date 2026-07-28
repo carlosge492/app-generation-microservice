@@ -73,9 +73,10 @@ def run_build(
     proc = subprocess.run(
         [flutter, "build", "apk", f"--{build_mode}"],
         cwd=project_dir, capture_output=True, text=True, check=False,
+        encoding="utf-8", errors="replace",  # see analyzer.py
     )
     if proc.returncode != 0:
-        tail = (proc.stdout + proc.stderr).strip()[-800:]
+        tail = ((proc.stdout or "") + (proc.stderr or "")).strip()[-800:]
         return BuildResult("failed", f"`flutter build apk` exited {proc.returncode}: {tail}")
 
     apk = next(
