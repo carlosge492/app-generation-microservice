@@ -5,11 +5,11 @@
     Phase 2 (the validation run) was deferred. Treat it as a sketch, not as
     working code.
 
-    Specifically unverified: whether `output_config.format` + streaming + the
-    `server-side-fallback` beta are accepted together; whether the structured
-    output parses; whether the model respects its path lane (violations are
-    silently dropped by `_bundle`, so a green build could still be hiding
-    discarded files); whether the refusal and max_tokens branches are reachable.
+    The request *shape* is now covered offline against a fake transport, so the
+    remaining unknowns are all server-side: whether `output_config.format` +
+    streaming + the `server-side-fallback` beta are accepted together, whether
+    the model's structured output actually parses, and whether it keeps to its
+    path lane in practice.
 
     The offline `TemplateGenerator` is the supported path and is validated
     end to end against the real Flutter toolchain. Before trusting this module,
@@ -20,8 +20,8 @@ Design intent (as written, not as proven):
 Each subagent is a separate, single-shot structured-output call with its own
 cached system prompt. Progressive disclosure is enforced here: the GenUI agent is
 never shown Firebase/Riverpod guidance, and the Logic agent is never asked to
-emit widgets. Path prefixes are re-checked after the fact — a model that writes
-outside its lane has its stray files rejected rather than silently merged.
+emit widgets. Lane enforcement is left to the graph nodes rather than done here —
+see `_bundle` for why filtering in this module was actively harmful.
 """
 
 from __future__ import annotations
@@ -133,10 +133,17 @@ callbacks and providers named in the diagnostics. Do not rewrite unrelated files
 
 
 class AnthropicGenerator:
-    def __init__(self, model: str = DEFAULT_MODEL, effort: str = "high") -> None:
+    def __init__(
+        self,
+        model: str = DEFAULT_MODEL,
+        effort: str = "high",
+        client: Any | None = None,
+    ) -> None:
         self.model = os.getenv("SUPERVISOR_MODEL", model)
         self.effort = effort
-        self._client = anthropic.Anthropic()
+        # `client` exists so the request shape can be exercised without
+        # credentials; anthropic.Anthropic() raises at construction without them.
+        self._client = client if client is not None else anthropic.Anthropic()
         self._fallbacks_supported = True
 
     # -- transport ---------------------------------------------------------- #
@@ -197,15 +204,22 @@ class AnthropicGenerator:
             return stream.get_final_message()
 
     @staticmethod
-    def _bundle(payload: dict[str, Any], allowed_prefixes: tuple[str, ...]) -> dict[str, str]:
-        files: dict[str, str] = {}
-        for entry in payload.get("files", []):
-            path = entry["path"].lstrip("./")
-            if not path.startswith(allowed_prefixes):
-                # Lane violation. Drop it rather than let it cross the boundary.
-                continue
-            files[path] = entry["content"]
-        return files
+    def _bundle(payload: dict[str, Any]) -> dict[str, str]:
+        """Normalise paths. Deliberately does NOT filter by lane.
+
+        An earlier version dropped out-of-lane files here. That silently
+        defeated the enforcement in `make_genui_node` / `make_logic_node`: by the
+        time the node looked for stray paths there were none left, so a model
+        writing into the wrong lane produced a green build with its output
+        quietly discarded — the failure mode hardest to notice and worst to ship.
+
+        Returning everything lets the node fail the build and name the offending
+        paths, which is what it was written to do.
+        """
+        return {
+            entry["path"].lstrip("./").replace("\\", "/"): entry["content"]
+            for entry in payload.get("files", [])
+        }
 
     # -- subagents ---------------------------------------------------------- #
 
@@ -240,7 +254,7 @@ class AnthropicGenerator:
                 + "\n\nRe-emit only the files these diagnostics name, fixed."
             )
         payload = self._call(GENUI_SYSTEM, prompt, FILE_BUNDLE_SCHEMA)
-        return self._bundle(payload, ("lib/ui/",))
+        return self._bundle(payload)
 
     def wire_logic(
         self,
@@ -264,4 +278,4 @@ class AnthropicGenerator:
                 + "\n\nPatch only what these diagnostics name."
             )
         payload = self._call(LOGIC_SYSTEM, prompt, FILE_BUNDLE_SCHEMA)
-        return self._bundle(payload, ("lib/providers/", "lib/main.dart"))
+        return self._bundle(payload)

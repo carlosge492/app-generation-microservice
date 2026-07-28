@@ -86,12 +86,13 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Screens actually build at runtime | generated widget smoke tests | ✅ |
 | Repair loop recovers honestly | fault injection | ✅ |
 | x402 gate | unit tests | ✅ |
-| **Claude generator** | — | ❌ never run |
+| Claude generator — request shape | fake transport, 17 tests | ✅ |
+| **Claude generator — live API** | — | ❌ never run |
 | APK packaging | `flutter build apk --debug` | ✅ 144 MB APK, correct applicationId |
 | Navigation / real Firestore I/O | — | ❌ needs an emulator |
 | Release signing / Play upload | — | ❌ debug keystore only |
 
-82 unit tests; eval sweep 11/11 against real analysis and widget tests;
+99 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout
