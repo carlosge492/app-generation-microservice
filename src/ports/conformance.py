@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import re
 
+import yaml
+
 from src.ports.analyzer import Diagnostic
 from src.ports.templates import camel, pascal, snake
 from src.prd.schema import PRD
@@ -32,9 +34,16 @@ def _ui_blob(files: dict[str, str]) -> str:
 
 
 def _logic_blob(files: dict[str, str]) -> str:
+    """Everything under lib/ that is not the widget tree.
+
+    Models and Firestore access legitimately live in lib/models/ or
+    lib/services/ rather than lib/providers/, so restricting this to
+    lib/providers/ made `missing_provider` and `wrong_collection` fire against
+    perfectly correct code.
+    """
     return "\n".join(
         v for k, v in files.items()
-        if k.startswith("lib/providers/") or k == "lib/main.dart"
+        if k.startswith("lib/") and not k.startswith("lib/ui/")
     )
 
 
@@ -49,10 +58,35 @@ def check_conformance(prd: PRD, files: dict[str, str]) -> list[Diagnostic]:
     out += _check_models(prd, logic)
     out += _check_form_fields(prd, files)
     out += _check_unwired_declarations(files)
+    out += _check_pubspec_parses(files)
     out += _check_lint_package_installed(files)
     out += _check_single_entrypoint(files)
     out += _check_duplicate_declarations(files)
     return out
+
+
+def _check_pubspec_parses(files: dict[str, str]) -> list[Diagnostic]:
+    """pubspec.yaml must be valid YAML before anything else is worth checking.
+
+    `StubAnalyzer` already does this, but it is skipped under `--analyzer dart`,
+    and the real toolchain does not degrade gracefully: a malformed pubspec makes
+    `flutter analyze` abort with a YAML scanner stack trace and exit 255, which
+    surfaces as a toolchain failure rather than the model's mistake. Duplicating
+    the check here keeps it analyzer-independent.
+    """
+    text = files.get("pubspec.yaml")
+    if text is None:
+        return [Diagnostic("error", "pubspec.yaml", 0, "missing_pubspec",
+                           "no pubspec.yaml was produced")]
+    try:
+        parsed = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        return [Diagnostic("error", "pubspec.yaml", 0, "unparseable_pubspec",
+                           f"pubspec.yaml is not valid YAML: {' '.join(str(exc).split())}")]
+    if not isinstance(parsed, dict):
+        return [Diagnostic("error", "pubspec.yaml", 0, "unparseable_pubspec",
+                           "pubspec.yaml did not parse to a YAML mapping")]
+    return []
 
 
 def _check_lint_package_installed(files: dict[str, str]) -> list[Diagnostic]:

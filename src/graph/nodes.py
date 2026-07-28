@@ -15,6 +15,7 @@ from src.payments.x402 import PaymentNotVerified
 from src.ports.analyzer import (
     HALLUCINATION_WARNINGS,
     DartAnalyzer,
+    Diagnostic,
     ToolchainUnavailable,
     is_fatal,
 )
@@ -60,21 +61,36 @@ def make_genui_node(generator: CodeGenerator) -> Node:
         repairing = bool(mine)
 
         files = generator.build_ui(prd, state["design_md"], mine)
-        stray = [p for p in files if not p.startswith("lib/ui/")]
-        if stray:
-            return {
-                "phase": "failed",
-                "failure": f"GenUI subagent wrote outside lib/ui/: {stray}",
-                "log": [f"genui: REJECTED {len(stray)} out-of-lane file(s)"],
-            }
 
-        merged = {**state.get("ui_files", {}), **files} if repairing else files
+        # Out-of-lane files are dropped, never written — but the agent is told,
+        # so the loop can repair it. Failing the build outright wasted every
+        # remaining repair pass on a mistake the offender could simply undo,
+        # and dropping them silently (as `_bundle` once did) hid the problem
+        # entirely. Drop *and* report.
+        kept = {p: c for p, c in files.items() if p.startswith("lib/ui/")}
+        violations = [
+            Diagnostic(
+                "error", path, 0, "genui_lane_violation",
+                f"GenUI wrote {path!r}, which is outside lib/ui/. Everything else "
+                f"under lib/ belongs to the Logic subagent; emit widgets only.",
+            )
+            for path in sorted(set(files) - set(kept))
+        ]
+
+        merged = {**state.get("ui_files", {}), **kept} if repairing else kept
         note = (
             f"genui: repair pass against {len(mine)} UI diagnostic(s)"
             if repairing
-            else f"genui: {len(files)} widget file(s) written"
+            else f"genui: {len(kept)} widget file(s) written"
         )
-        return {"ui_files": merged, "phase": "logic", "log": [note]}
+        if violations:
+            note += f" ({len(violations)} out-of-lane file(s) dropped)"
+        return {
+            "ui_files": merged,
+            "genui_violations": violations,
+            "phase": "logic",
+            "log": [note],
+        }
 
     return genui
 
@@ -88,22 +104,40 @@ def make_logic_node(generator: CodeGenerator) -> Node:
         repairing = bool(diagnostics)
 
         files = generator.wire_logic(prd, state["design_md"], state["ui_files"], diagnostics)
-        allowed = ("lib/providers/", "lib/main.dart")
-        stray = [p for p in files if not p.startswith(allowed)]
-        if stray:
-            return {
-                "phase": "failed",
-                "failure": f"Logic subagent wrote outside its lane: {stray}",
-                "log": [f"logic: REJECTED {len(stray)} out-of-lane file(s)"],
-            }
+        # Logic owns everything under lib/ except the widget tree. Enumerating
+        # allowed directories instead assumed TemplateGenerator's layout, where
+        # models live inside provider files; a generator following ordinary
+        # Flutter convention writes lib/models/, lib/services/ and the
+        # flutterfire-generated lib/firebase_options.dart, none of which are UI.
+        # The invariant that matters is that UI and state never mix.
+        kept = {
+            p: c for p, c in files.items()
+            if p.startswith("lib/") and not p.startswith("lib/ui/")
+        }
+        violations = [
+            Diagnostic(
+                "error", path, 0, "logic_lane_violation",
+                f"Logic wrote {path!r}. The widget tree under lib/ui/ belongs to "
+                f"the GenUI subagent and has already been written; own state, "
+                f"models and the composition root instead.",
+            )
+            for path in sorted(set(files) - set(kept))
+        ]
 
-        merged = {**state.get("provider_files", {}), **files} if repairing else files
+        merged = {**state.get("provider_files", {}), **kept} if repairing else kept
         note = (
             f"logic: repair pass against {len(diagnostics)} state diagnostic(s)"
             if repairing
-            else f"logic: {len(files)} state file(s) written"
+            else f"logic: {len(kept)} state file(s) written"
         )
-        return {"provider_files": merged, "phase": "qa", "log": [note]}
+        if violations:
+            note += f" ({len(violations)} out-of-lane file(s) dropped)"
+        return {
+            "provider_files": merged,
+            "logic_violations": violations,
+            "phase": "qa",
+            "log": [note],
+        }
 
     return logic
 
@@ -118,24 +152,47 @@ def make_qa_node(analyzer: DartAnalyzer, runner: TestRunner | None = None) -> No
         smoke = build_smoke_tests(_prd(state), files)
         files.update(smoke)
 
+        # Remove anything we wrote on a previous pass that is no longer part of
+        # the app. A repair pass that renames a screen used to leave the old
+        # file — and its now-dangling smoke test — on disk, which then failed
+        # analysis for a file the generator had correctly deleted.
+        for stale in sorted(state.get("written_files", [])):
+            if stale not in files:
+                (build_dir / stale).unlink(missing_ok=True)
+
         # Materialise the project, then analyse it the way the real pipeline would.
         for rel, content in files.items():
             target = build_dir / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
 
-        try:
-            diagnostics = analyzer.analyze(build_dir)
-        except ToolchainUnavailable as exc:
-            return {
-                "phase": "failed",
-                "failure": str(exc),
-                "log": [f"qa: {exc}"],
-            }
+        # Conformance first: it is toolchain-free and catches an unparseable
+        # pubspec, which makes `flutter analyze` abort with a YAML stack trace
+        # instead of a diagnostic. Running the analyzer on a project we already
+        # know is malformed only buries the real cause.
+        conformance = check_conformance(_prd(state), files)
+        pubspec_broken = any(d.code == "unparseable_pubspec" for d in conformance)
+
+        diagnostics: list[Diagnostic] = []
+        if not pubspec_broken:
+            try:
+                diagnostics = analyzer.analyze(build_dir)
+            except ToolchainUnavailable as exc:
+                return {
+                    "phase": "failed",
+                    "failure": str(exc),
+                    "log": [f"qa: {exc}"],
+                }
 
         # Static analysis grades syntax; conformance grades whether the app is
-        # the one the PRD asked for. Neither subsumes the other.
-        diagnostics = diagnostics + check_conformance(_prd(state), files)
+        # the one the PRD asked for; lane violations were recorded by the agents
+        # themselves. None subsumes the others.
+        diagnostics = (
+            diagnostics
+            + conformance
+            + state.get("genui_violations", [])
+            + state.get("logic_violations", [])
+        )
 
         # Static analysis proves it compiles; the widget tests prove it runs.
         if runner is not None:
@@ -168,6 +225,7 @@ def make_qa_node(analyzer: DartAnalyzer, runner: TestRunner | None = None) -> No
             note += " [stalled — escalating to the other agent]"
         return {
             "diagnostics": errors,
+            "written_files": sorted(files),
             "diagnostic_signature": signature,
             "stalled": stalled,
             "test_files": smoke,

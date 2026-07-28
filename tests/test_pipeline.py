@@ -577,13 +577,20 @@ class RogueGenerator(TemplateGenerator):
         return files
 
 
-def test_out_of_lane_write_fails_the_build(prd, tmp_path):
-    app = build_graph(RogueGenerator(), StubAnalyzer(), dry_run=True)
+def test_out_of_lane_write_is_dropped_and_reported(prd, tmp_path):
+    """A lane violation is repairable, not instantly fatal.
+
+    The stray file is never written; the offending agent is told and gets repair
+    passes to stop emitting it. A generator that keeps doing it exhausts the
+    budget and the build stays red — but one that corrects itself recovers,
+    which failing outright made impossible.
+    """
+    app = build_graph(RogueGenerator(), StubAnalyzer(), max_repairs=1, dry_run=True)
     final = app.invoke(initial_state(prd.model_dump(mode="json"), str(tmp_path)))
 
-    assert final["phase"] == "failed"
-    assert "lib/providers/sneaky.dart" in final["failure"]
-    assert not (tmp_path / "lib/providers/sneaky.dart").exists()
+    assert not (tmp_path / "lib/providers/sneaky.dart").exists(), "must never land"
+    assert "genui_lane_violation" in {d.code for d in final["diagnostics"]}
+    assert any("out-of-lane" in line for line in final["log"])
 
 
 # --------------------------------------------------------------------------- #
@@ -692,7 +699,10 @@ def test_conformance_passes_on_real_generated_output():
         gen = TemplateGenerator()
         ui = gen.build_ui(prd, "", [])
         logic = gen.wire_logic(prd, "", ui, [])
-        assert check_conformance(prd, {**ui, **logic}) == [], name
+        plan = gen.plan(prd)
+        files = {**ui, **logic, "pubspec.yaml": plan.pubspec,
+                 "analysis_options.yaml": plan.analysis_options}
+        assert check_conformance(prd, files) == [], name
 
 
 def test_plan_enables_the_linter():

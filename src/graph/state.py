@@ -33,6 +33,11 @@ class BuildState(TypedDict, total=False):
 
     # --- qa subagent output ---
     test_files: dict[str, str]
+    written_files: list[str]
+    # Out-of-lane writes, recorded by the offending agent so the
+    # loop can repair them instead of failing outright.
+    genui_violations: list[Diagnostic]
+    logic_violations: list[Diagnostic]
     diagnostics: list[Diagnostic]
     repair_attempts: int
     # Signature of the previous round's diagnostics, and whether this round is

@@ -1,19 +1,21 @@
 """Claude-backed implementation of `CodeGenerator`.
 
-    ⚠️  STATUS: NEVER EXECUTED. Not one line of this module has run against the
-    live API — there were no credentials on the machine it was written on, and
-    Phase 2 (the validation run) was deferred. Treat it as a sketch, not as
-    working code.
+    STATUS: exercised against the live API on Haiku 4.5. Structured output
+    parses, the request shape is accepted, and a generated app has passed real
+    `flutter analyze` plus its widget smoke tests. Not yet run on Opus, and not
+    yet green across the whole eval sweep — treat the pass rate, not this
+    docstring, as the measure.
 
-    The request *shape* is now covered offline against a fake transport, so the
-    remaining unknowns are all server-side: whether `output_config.format` +
-    streaming + the `server-side-fallback` beta are accepted together, whether
-    the model's structured output actually parses, and whether it keeps to its
-    path lane in practice.
+    What the first live sweeps taught, all encoded elsewhere in the pipeline:
+    `effort` is rejected outright by models that lack it (hence
+    OPTIONAL_FEATURES); models write lib/models/ and lib/firebase_options.dart
+    because that is ordinary Flutter, so lane rules must accommodate it; and a
+    lane violation is worth reporting as a repairable diagnostic rather than
+    failing the build outright.
 
-    The offline `TemplateGenerator` is the supported path and is validated
-    end to end against the real Flutter toolchain. Before trusting this module,
-    run `evals/run.py --generator claude --analyzer dart` and compare.
+    `TemplateGenerator` remains the deterministic reference path and is
+    validated end to end. Compare against it with
+    `evals/run.py --generator claude --analyzer dart --run-tests`.
 
 Design intent (as written, not as proven):
 
@@ -106,7 +108,12 @@ GENUI_SYSTEM = """\
 You are the GenUI subagent. You write the Flutter widget tree and nothing else.
 
 Hard rules:
-- Emit files under lib/ui/ ONLY. Never lib/providers/, never lib/main.dart.
+- Emit files under lib/ui/ ONLY. Everything else under lib/ belongs to the Logic
+  subagent: lib/main.dart, lib/providers/, lib/models/, lib/services/ and
+  lib/firebase_options.dart. Do not write them even if the app obviously needs
+  them — emitting one fails the build.
+- Do NOT declare `main()` or the root App widget. Logic owns the composition
+  root; a second copy in lib/ui/ leaves the app with two shells.
 - No business logic: no Firebase imports, no network calls, no persistence.
 - No `setState`, except a strictly localized animation toggle, which must carry
   the trailing comment `// localized animation toggle`.
@@ -123,8 +130,14 @@ LOGIC_SYSTEM = """\
 You are the Logic subagent. You own state and data access, never the widget tree.
 
 Hard rules:
-- Emit files under lib/providers/ plus lib/main.dart ONLY. Never lib/ui/.
+- You own everything under lib/ EXCEPT lib/ui/. Put state in lib/providers/,
+  data classes in lib/models/, Firestore access in lib/services/ if you want a
+  service layer, and the composition root in lib/main.dart. Use the ordinary
+  Flutter layout; you are not restricted to one directory.
+- NEVER write anything under lib/ui/ — that is the GenUI subagent's, and it has
+  already written the widget tree you are being shown.
 - Never declare a `Widget build(...)` method — you do not build UI.
+- Declare the root App widget and `main()` exactly once, in lib/main.dart.
 - Riverpod only. Declare every provider referenced by the UI you are shown,
   spelled exactly as the UI spells it.
 - Firebase access goes through cloud_firestore inside providers/controllers.
@@ -148,7 +161,12 @@ class AnthropicGenerator:
         self.effort = effort
         # `client` exists so the request shape can be exercised without
         # credentials; anthropic.Anthropic() raises at construction without them.
-        self._client = client if client is not None else anthropic.Anthropic()
+        # `overloaded_error` (529) is transient and cost one PRD of a sweep
+        # to a single unlucky moment. The SDK retries 5xx already; this just
+        # buys more headroom than the default of 2.
+        self._client = (
+            client if client is not None else anthropic.Anthropic(max_retries=6)
+        )
         # Populated at runtime from the server's own 400s.
         self._unsupported: set[str] = set()
 

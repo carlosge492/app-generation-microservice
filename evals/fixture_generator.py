@@ -191,8 +191,7 @@ class SettingsView extends ConsumerWidget {
 }
 """
 
-_REPOSITORY = """import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
+_MODEL = """import 'package:cloud_firestore/cloud_firestore.dart';
 
 class Observation {
   const Observation({
@@ -231,6 +230,12 @@ class Observation {
         'recordedAt': recordedAt.toIso8601String(),
       };
 }
+"""
+
+_REPOSITORY = """import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../models/observation.dart';
 
 final observationsCollection =
     Provider<CollectionReference<Map<String, dynamic>>>((ref) {
@@ -313,6 +318,9 @@ class FixtureGenerator(TemplateGenerator):
         if not self._is_field_notes(prd):
             return super().wire_logic(prd, design_md, ui_files, diagnostics)
         return {
+            # A data class in lib/models/ is ordinary Flutter layout, and was
+            # exactly the shape the first live sweep tripped over.
+            "lib/models/observation.dart": _MODEL,
             "lib/providers/observations_repository.dart": _REPOSITORY,
             "lib/main.dart": _MAIN,
         }

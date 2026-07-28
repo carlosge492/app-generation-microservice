@@ -39,6 +39,10 @@ _EXPLICIT: dict[str, Owner] = {
     "smoke_failure": "genui",
     # GenUI put the composition root in its own lane; it must drop it.
     "misplaced_entrypoint": "genui",
+    # Routed by culprit, not by path: Logic writing lib/ui/ must be fixed
+    # by Logic, even though the path says GenUI owns that directory.
+    "genui_lane_violation": "genui",
+    "logic_lane_violation": "logic",
     # Either agent may have written the second copy; GenUI goes first and the
     # graph gives Logic a turn immediately after.
     "duplicate_declaration": "genui",
