@@ -113,7 +113,7 @@ dependencies:
   flutter_riverpod: ^2.5.1
   firebase_core: ^3.6.0
   cloud_firestore: ^5.4.0
-
+$EXTRA_DEPS
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -196,8 +196,132 @@ $ROUTES
 }
 """)
 
+# --- Cupertino variants ---------------------------------------------------- #
+# A CupertinoApp does not provide MaterialLocalizations, so Material widgets
+# (Scaffold, AppBar, ListTile) throw at runtime inside one. The Cupertino family
+# is therefore a full parallel set, not a swap of the root widget alone.
+
+CUPERTINO_APP = Template("""import 'package:flutter/cupertino.dart';
+
+$IMPORTS
+
+class $APP_CLASS extends StatelessWidget {
+  const $APP_CLASS({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return CupertinoApp(
+      title: '$TITLE',
+      debugShowCheckedModeBanner: false,
+      theme: const CupertinoThemeData(
+        primaryColor: CupertinoColors.activeBlue,
+      ),
+      initialRoute: '$INITIAL_ROUTE',
+      routes: {
+$ROUTES
+      },
+    );
+  }
+}
+""")
+
+CUPERTINO_LIST_SCREEN = Template("""import 'package:flutter/cupertino.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../providers/$PROVIDER_MODULE.dart';
+
+class $CLASS extends ConsumerWidget {
+  const $CLASS({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final rows = ref.watch($LIST_PROVIDER);
+    return CupertinoPageScaffold(
+      navigationBar: CupertinoNavigationBar(
+        middle: const Text('$TITLE'),
+        trailing: CupertinoButton(
+          padding: EdgeInsets.zero,
+          onPressed: () => ref.read($CONTROLLER_PROVIDER.notifier).createDraft(),
+          child: const Icon(CupertinoIcons.add),
+        ),
+      ),
+      child: SafeArea(
+        child: rows.when(
+          data: (items) => ListView.builder(
+            itemCount: items.length,
+            itemBuilder: (context, index) {
+              final item = items[index];
+              return CupertinoListTile(
+                title: Text(item.$PRIMARY_FIELD.toString()),
+                subtitle: Text(item.id),
+              );
+            },
+          ),
+          loading: () => const Center(child: CupertinoActivityIndicator()),
+          error: (error, stackTrace) => Center(child: Text('Failed to load: $error')),
+        ),
+      ),
+    );
+  }
+}
+""")
+
+CUPERTINO_FORM_SCREEN = Template("""import 'package:flutter/cupertino.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../providers/$PROVIDER_MODULE.dart';
+
+class $CLASS extends ConsumerWidget {
+  const $CLASS({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final controller = ref.read($CONTROLLER_PROVIDER.notifier);
+    return CupertinoPageScaffold(
+      navigationBar: CupertinoNavigationBar(middle: const Text('$TITLE')),
+      child: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+$FIELDS
+            const SizedBox(height: 24),
+            CupertinoButton.filled(
+              onPressed: controller.submit,
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+""")
+
+CUPERTINO_PLAIN_SCREEN = Template("""import 'package:flutter/cupertino.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+class $CLASS extends ConsumerWidget {
+  const $CLASS({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return CupertinoPageScaffold(
+      navigationBar: CupertinoNavigationBar(middle: const Text('$TITLE')),
+      child: const SafeArea(
+        child: Center(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Text('$TITLE'),
+          ),
+        ),
+      ),
+    );
+  }
+}
+""")
+
 MAIN_DART = Template("""import 'package:firebase_core/firebase_core.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/$FRAMEWORK.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'ui/app.dart';
@@ -415,6 +539,9 @@ class TemplateGenerator:
         pubspec = PUBSPEC.safe_substitute(
             PKG=pkg,
             DESCRIPTION=yaml_scalar(prd.description or prd.app_name),
+            # CupertinoIcons resolves at compile time but renders nothing
+            # without the font package.
+            EXTRA_DEPS="  cupertino_icons: ^1.0.8\n" if prd.theme == "cupertino" else "",
         )
         return Plan(design_md=design, pubspec=pubspec, analysis_options=ANALYSIS_OPTIONS)
 
@@ -429,7 +556,7 @@ class TemplateGenerator:
 
         for screen in prd.screens:
             model = models.get(screen.model) if screen.model else None
-            files[screen_file(screen)] = self._render_screen(screen, model)
+            files[screen_file(screen)] = self._render_screen(screen, model, prd.theme)
 
         app_class = f"{pascal(prd.app_name)}App"
         imports = "\n".join(
@@ -439,7 +566,8 @@ class TemplateGenerator:
             f"        '/{snake(s.id)}': (context) => const {screen_class(s)}(),"
             for s in prd.screens
         )
-        files["lib/ui/app.dart"] = APP_DART.safe_substitute(
+        app_template = CUPERTINO_APP if prd.theme == "cupertino" else APP_DART
+        files["lib/ui/app.dart"] = app_template.safe_substitute(
             IMPORTS=imports,
             APP_CLASS=app_class,
             TITLE=dart_string(prd.app_name),
@@ -468,24 +596,37 @@ class TemplateGenerator:
                 )
         return files
 
-    def _render_screen(self, screen: Screen, model: DataModel | None) -> str:
+    def _render_screen(
+        self, screen: Screen, model: DataModel | None, theme: str = "material"
+    ) -> str:
+        cupertino = theme == "cupertino"
         cls = screen_class(screen)
         if model is None:
-            return PLAIN_SCREEN.safe_substitute(
-                CLASS=cls, TITLE=dart_string(screen.title)
-            )
+            plain = CUPERTINO_PLAIN_SCREEN if cupertino else PLAIN_SCREEN
+            return plain.safe_substitute(CLASS=cls, TITLE=dart_string(screen.title))
 
         module = snake(model.name) + "_providers"
         if screen.kind == "form":
-            fields = "\n".join(
-                "          TextFormField(\n"
-                "            decoration: const InputDecoration("
-                f"labelText: '{dart_string(f.label)}'),\n"
-                f"            onChanged: (value) => controller.update('{f.name}', value),\n"
-                "          ),"
-                for f in (screen.fields or model.fields)
-            )
-            return FORM_SCREEN.safe_substitute(
+            if cupertino:
+                fields = "\n".join(
+                    "            CupertinoTextField(\n"
+                    f"              placeholder: '{dart_string(f.label)}',\n"
+                    "              onChanged: (value) => "
+                    f"controller.update('{f.name}', value),\n"
+                    "            ),"
+                    for f in (screen.fields or model.fields)
+                )
+            else:
+                fields = "\n".join(
+                    "          TextFormField(\n"
+                    "            decoration: const InputDecoration("
+                    f"labelText: '{dart_string(f.label)}'),\n"
+                    f"            onChanged: (value) => controller.update('{f.name}', value),\n"
+                    "          ),"
+                    for f in (screen.fields or model.fields)
+                )
+            form = CUPERTINO_FORM_SCREEN if cupertino else FORM_SCREEN
+            return form.safe_substitute(
                 CLASS=cls,
                 TITLE=dart_string(screen.title),
                 PROVIDER_MODULE=module,
@@ -494,7 +635,8 @@ class TemplateGenerator:
             )
 
         primary = model.fields[0].name if model.fields else "id"
-        return LIST_SCREEN.safe_substitute(
+        listing = CUPERTINO_LIST_SCREEN if cupertino else LIST_SCREEN
+        return listing.safe_substitute(
             CLASS=cls,
             TITLE=dart_string(screen.title),
             PROVIDER_MODULE=module,
@@ -517,7 +659,8 @@ class TemplateGenerator:
             files[provider_file(model)] = self._render_providers(model)
 
         files["lib/main.dart"] = MAIN_DART.safe_substitute(
-            APP_CLASS=f"{pascal(prd.app_name)}App"
+            APP_CLASS=f"{pascal(prd.app_name)}App",
+            FRAMEWORK="cupertino" if prd.theme == "cupertino" else "material",
         )
 
         # Repair pass: declare exactly the providers QA reported as undefined,

@@ -13,6 +13,7 @@ from src.build.pipeline import run_build
 from src.graph.state import BuildState, all_files
 from src.payments.x402 import PaymentNotVerified
 from src.ports.analyzer import DartAnalyzer, ToolchainUnavailable
+from src.ports.conformance import check_conformance
 from src.ports.generator import CodeGenerator
 from src.ports.ownership import owner_of, route_for
 from src.prd.schema import PRD
@@ -113,6 +114,10 @@ def make_qa_node(analyzer: DartAnalyzer) -> Node:
                 "failure": str(exc),
                 "log": [f"qa: {exc}"],
             }
+
+        # Static analysis grades syntax; conformance grades whether the app is
+        # the one the PRD asked for. Neither subsumes the other.
+        diagnostics = diagnostics + check_conformance(_prd(state), files)
 
         errors = [d for d in diagnostics if d.severity == "error"]
         # The repair counter lives here so it ticks once per failed analysis,

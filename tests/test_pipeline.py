@@ -11,6 +11,7 @@ from src.graph.builder import build_graph
 from src.graph.state import initial_state
 from src.payments.x402 import PaymentNotVerified, is_verified
 from src.ports.analyzer import FlutterAnalyzer, StubAnalyzer
+from src.ports.conformance import check_conformance
 from src.ports.generator import Plan
 from src.ports.ownership import owner_of
 from src.ports.templates import TemplateGenerator, dart_string
@@ -320,16 +321,57 @@ def test_tricky_prd_emits_parseable_dart_literals():
             )
 
 
-@pytest.mark.xfail(reason="known gap: theme is read from the PRD but never applied", strict=True)
 def test_cupertino_theme_is_honoured():
-    """The analyzer cannot catch this — the code compiles, it is just wrong.
-
-    `theme: cupertino` is accepted by the schema and documented in DESIGN.md, but
-    the widget templates always emit MaterialApp.
-    """
+    """Was a silent no-op: the schema accepted `cupertino` and always emitted
+    MaterialApp. The analyzer could never catch it — the code compiled fine."""
     prd = load_prd("evals/prds/cupertino.prd.json")
-    app_dart = TemplateGenerator().build_ui(prd, "", [])["lib/ui/app.dart"]
-    assert "CupertinoApp" in app_dart
+    ui = TemplateGenerator().build_ui(prd, "", [])
+
+    assert "CupertinoApp" in ui["lib/ui/app.dart"]
+    assert "MaterialApp" not in ui["lib/ui/app.dart"]
+    # A CupertinoApp provides no MaterialLocalizations, so Material widgets
+    # inside one throw at runtime. Swapping the root widget alone is not enough.
+    for path, body in ui.items():
+        assert "package:flutter/material.dart" not in body, path
+        # Word-boundary anchored: CupertinoPageScaffold legitimately ends in
+        # "Scaffold", and CupertinoListTile in "ListTile".
+        for material_only in ("Scaffold", "AppBar", "ListTile", "TextFormField"):
+            assert not re.search(rf"\b{material_only}\(", body), \
+                f"{path} uses Material-only {material_only}"
+
+
+def test_material_theme_stays_material():
+    ui = TemplateGenerator().build_ui(load_prd(PRD_PATH), "", [])
+    assert "MaterialApp" in ui["lib/ui/app.dart"]
+    assert "CupertinoApp" not in ui["lib/ui/app.dart"]
+
+
+def test_conformance_catches_theme_mismatch():
+    """The check that made the cupertino gap visible in the first place."""
+    prd = load_prd("evals/prds/cupertino.prd.json")
+    material_output = {"lib/ui/app.dart": "return MaterialApp(title: 'x');"}
+
+    codes = {d.code for d in check_conformance(prd, material_output)}
+    assert "theme_mismatch" in codes
+
+
+def test_conformance_catches_dropped_screen_and_model():
+    prd = load_prd(PRD_PATH)
+    codes = {d.code for d in check_conformance(prd, {"lib/ui/app.dart": "MaterialApp()"})}
+
+    assert "missing_screen" in codes
+    assert "missing_provider" in codes
+
+
+def test_conformance_passes_on_real_generated_output():
+    """No false positives against the generator's own output."""
+    for name in ["examples/todo_app.prd.json", "evals/prds/cupertino.prd.json",
+                 "evals/prds/multi_model.prd.json", "evals/prds/all_screen_kinds.prd.json"]:
+        prd = load_prd(name)
+        gen = TemplateGenerator()
+        ui = gen.build_ui(prd, "", [])
+        logic = gen.wire_logic(prd, "", ui, [])
+        assert check_conformance(prd, {**ui, **logic}) == [], name
 
 
 def test_plan_enables_the_linter():

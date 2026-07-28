@@ -28,6 +28,13 @@ _EXPLICIT: dict[str, Owner] = {
     "logic_in_ui": "genui",
     # Anchored in lib/providers/ and genuinely the Logic agent's fault.
     "ui_in_logic": "logic",
+    # Conformance: the app compiles but is not the app that was specified.
+    "theme_mismatch": "genui",
+    "missing_screen": "genui",
+    "unreachable_screen": "genui",
+    "missing_form_field": "genui",
+    "missing_provider": "logic",
+    "wrong_collection": "logic",
     # Planning-phase output is frozen once GenUI starts; nothing downstream can
     # repair it. Changes flow downstream, never upstream.
     "missing_pubspec": "fatal",
