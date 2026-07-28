@@ -23,13 +23,20 @@ Do not guess how to run this project. Use these exact commands when testing or e
 | Run local Dart MCP server | `mcp_dart start --workspace ./generated_apps` |
 | Trigger QA static analysis | `flutter analyze` (run inside the build dir) |
 | Run the eval sweep | `poetry run python evals/run.py --analyzer dart --flutter-root "C:\flutter"` |
-| Run build pipeline | `fastlane android build_m2m_apk` |
+| Run build pipeline | `poetry run python src/supervisor.py <prd> --execute --analyzer dart --flutter-root "C:lutter"` |
 
 The Flutter SDK lives at `C:\flutter` (3.44.8 / Dart 3.12.2) and is deliberately
 **not** on PATH — pass `--flutter-root` or set `$FLUTTER_ROOT`. `flutter analyze`
 is used rather than `dart analyze` because it runs `pub get` first; without a
 resolved `.dart_tool/package_config.json`, every `package:flutter/...` import
 reports as an unresolved URI and the real diagnostics are buried.
+
+Packaging calls `flutter build apk` rather than a `fastlane` lane: fastlane is a
+Ruby tool and every lane it would run here wraps that one command, so dropping it
+removes a language runtime from the build environment. Reinstate it when signing
+or Play-upload steps justify it. Android SDK 36 + build-tools 36 live at
+`C:\Android`, JDK 17 under `C:\Program Files\Microsoft`; both are registered
+with `flutter config`, so no PATH changes are needed.
 
 ## 3. Conventions and Tradeoffs
 
@@ -39,7 +46,7 @@ reports as an unresolved URI and the real diagnostics are buried.
 
 ## 4. Safety Gate: Payment Verification
 
-Never trigger the `fastlane` build command unless the `x402_payment_verified` flag returns `true` in the Supervisor payload. This check is not optional and must never be bypassed, including during retries or debugging.
+Never trigger the packaging step unless the `x402_payment_verified` flag returns `true` in the Supervisor payload. This check is not optional and must never be bypassed, including during retries or debugging.
 
 ## 5. Common Agent Mistakes (Gotchas)
 

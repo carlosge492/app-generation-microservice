@@ -87,10 +87,12 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Repair loop recovers honestly | fault injection | ✅ |
 | x402 gate | unit tests | ✅ |
 | **Claude generator** | — | ❌ never run |
-| **APK packaging** | — | ❌ never run |
+| APK packaging | `flutter build apk --debug` | ✅ 144 MB APK, correct applicationId |
 | Navigation / real Firestore I/O | — | ❌ needs an emulator |
+| Release signing / Play upload | — | ❌ debug keystore only |
 
-78 unit tests; eval sweep 11/11 against real analysis and widget tests.
+82 unit tests; eval sweep 11/11 against real analysis and widget tests;
+a debug APK built end to end from a payment-verified PRD.
 
 ## Layout
 
@@ -109,7 +111,8 @@ src/
     runtime.py         runs them
     ownership.py       which agent can fix which diagnostic
   payments/x402.py     the payment gate
-  build/pipeline.py    fastlane wrapper
+  build/pipeline.py    APK packaging (x402-gated)
+  build/scaffold.py    generates android/ via `flutter create`
 evals/
   prds/                10 PRDs chosen to break things
   run.py               pass-rate harness

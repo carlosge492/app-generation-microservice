@@ -177,12 +177,14 @@ def make_qa_node(analyzer: DartAnalyzer, runner: TestRunner | None = None) -> No
     return qa
 
 
-def make_packaging_node(dry_run: bool) -> Node:
+def make_packaging_node(dry_run: bool, flutter_root: str | None = None) -> Node:
     def packaging(state: BuildState) -> dict[str, Any]:
         try:
             result = run_build(
                 Path(state["build_dir"]),
                 payment_verified=state.get("x402_payment_verified", False),
+                prd=_prd(state),
+                flutter_root=flutter_root,
                 dry_run=dry_run,
             )
         except PaymentNotVerified as exc:
@@ -192,7 +194,8 @@ def make_packaging_node(dry_run: bool) -> Node:
                 "log": [f"packaging: gate closed — {exc}"],
             }
         return {
-            "phase": "done",
+            "phase": "failed" if result.status == "failed" else "done",
+            "failure": result.detail if result.status == "failed" else "",
             "apk_path": result.apk_path or "",
             "log": [f"packaging: {result.status} — {result.detail}"],
         }

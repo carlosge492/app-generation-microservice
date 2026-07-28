@@ -7,7 +7,8 @@ import re
 import pytest
 import yaml
 
-from src.build.pipeline import run_build
+from src.build.pipeline import BuildResult, run_build
+from src.build.scaffold import _split_application_id
 from src.graph.builder import build_graph
 from src.graph.state import initial_state
 from src.payments.x402 import PaymentNotVerified, is_verified
@@ -509,6 +510,44 @@ def test_build_refuses_without_payment(tmp_path):
 
 def test_build_proceeds_once_paid(tmp_path):
     assert run_build(tmp_path, payment_verified=True, dry_run=True).status == "skipped"
+
+
+@pytest.mark.parametrize(
+    "package_name, expected",
+    [
+        ("com.example.fieldnotes", ("com.example", "fieldnotes")),
+        ("io.acme.sub.widget", ("io.acme.sub", "widget")),
+    ],
+)
+def test_application_id_split_preserves_the_prd_package_name(package_name, expected):
+    """`flutter create` composes applicationId as <org>.<project-name>. Splitting
+    this way reproduces the PRD's package_name exactly instead of letting it
+    drift to <org>.<dart_package_name>, which differs whenever the app name and
+    the package name are not the same word."""
+    assert _split_application_id(package_name) == expected
+
+
+def test_build_without_a_prd_cannot_scaffold(tmp_path):
+    """Payment verified but no PRD: skip honestly rather than build the wrong id."""
+    result = run_build(tmp_path, payment_verified=True, dry_run=False, prd=None)
+    assert result.status == "skipped"
+    assert "PRD" in result.detail
+
+
+def test_packaging_failure_fails_the_build(prd, tmp_path, monkeypatch):
+    """A failed APK build must not report `done` with an empty apk_path."""
+    import src.graph.nodes as nodes
+
+    monkeypatch.setattr(
+        nodes, "run_build",
+        lambda *a, **k: BuildResult("failed", "gradle exploded"),
+    )
+    paid = prd.model_copy(update={"x402_payment_verified": True})
+    app = build_graph(TemplateGenerator(), StubAnalyzer(), dry_run=False)
+    final = app.invoke(initial_state(paid.model_dump(mode="json"), str(tmp_path)))
+
+    assert final["phase"] == "failed"
+    assert "gradle exploded" in final["failure"]
 
 
 def test_unpaid_prd_still_produces_green_code(prd, tmp_path):

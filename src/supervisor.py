@@ -93,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         max_repairs=args.max_repairs,
         test_runner=FlutterTestRunner(args.flutter_root) if args.run_tests else None,
         dry_run=not args.execute,
+        flutter_root=args.flutter_root,
     )
 
     print(f"PRD      : {args.prd}  ({prd.app_name})")
