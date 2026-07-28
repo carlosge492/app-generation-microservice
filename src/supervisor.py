@@ -10,6 +10,7 @@ loop runs with no credentials and no Flutter SDK. Swap in the real ones with
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -39,6 +40,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--analyzer", choices=["stub", "dart"], default="stub",
                         help="stub = no SDK needed; dart = real `dart analyze`")
     parser.add_argument("--build-dir", default=str(DEFAULT_BUILD_DIR))
+    parser.add_argument("--flutter-root", default=os.getenv("FLUTTER_ROOT"),
+                        help="Flutter SDK root; falls back to $FLUTTER_ROOT, then PATH")
     parser.add_argument("--max-repairs", type=int, default=3)
     parser.add_argument("--execute", action="store_true",
                         help="actually invoke fastlane (requires x402_payment_verified)")
@@ -82,13 +85,14 @@ def main(argv: list[str] | None = None) -> int:
 
     app = build_graph(
         generator,
-        get_analyzer(args.analyzer),
+        get_analyzer(args.analyzer, args.flutter_root),
         max_repairs=args.max_repairs,
         dry_run=not args.execute,
     )
 
     print(f"PRD      : {args.prd}  ({prd.app_name})")
-    print(f"generator: {args.generator}    analyzer: {args.analyzer}")
+    print(f"generator: {args.generator}    analyzer: {args.analyzer}"
+          + (f"    flutter: {args.flutter_root}" if args.flutter_root else ""))
     print(f"build dir: {build_dir}")
     print("-" * 68)
 

@@ -21,8 +21,14 @@ Do not guess how to run this project. Use these exact commands when testing or e
 |---|---|
 | Start the orchestrator | `poetry run python src/supervisor.py` |
 | Run local Dart MCP server | `mcp_dart start --workspace ./generated_apps` |
-| Trigger QA static analysis | `dart analyze ./generated_apps/current_build` |
+| Trigger QA static analysis | `flutter analyze` (run inside the build dir) |
 | Run build pipeline | `fastlane android build_m2m_apk` |
+
+The Flutter SDK lives at `C:\flutter` (3.44.8 / Dart 3.12.2) and is deliberately
+**not** on PATH — pass `--flutter-root` or set `$FLUTTER_ROOT`. `flutter analyze`
+is used rather than `dart analyze` because it runs `pub get` first; without a
+resolved `.dart_tool/package_config.json`, every `package:flutter/...` import
+reports as an unresolved URI and the real diagnostics are buried.
 
 ## 3. Conventions and Tradeoffs
 

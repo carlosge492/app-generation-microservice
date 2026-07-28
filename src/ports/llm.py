@@ -198,14 +198,30 @@ class AnthropicGenerator:
             "PRD:\n```json\n" + prd.model_dump_json(indent=2) + "\n```",
             PLAN_SCHEMA,
         )
-        return Plan(design_md=payload["design_md"], pubspec=payload["pubspec"])
+        # analysis_options.yaml is fixed boilerplate, not a creative artifact —
+        # asking the model for it only invites drift.
+        from src.ports.templates import ANALYSIS_OPTIONS
 
-    def build_ui(self, prd: PRD, design_md: str) -> dict[str, str]:
+        return Plan(
+            design_md=payload["design_md"],
+            pubspec=payload["pubspec"],
+            analysis_options=ANALYSIS_OPTIONS,
+        )
+
+    def build_ui(
+        self, prd: PRD, design_md: str, diagnostics: list[Diagnostic] | None = None
+    ) -> dict[str, str]:
         prompt = (
             "DESIGN.md (frozen):\n```markdown\n" + design_md + "\n```\n\n"
             "PRD:\n```json\n" + prd.model_dump_json(indent=2) + "\n```\n\n"
             "Emit every screen plus lib/ui/app.dart."
         )
+        if diagnostics:
+            prompt += (
+                "\n\n## REPAIR PASS — QA reported these diagnostics against your files\n\n"
+                + "\n".join(f"- {d.render()}" for d in diagnostics)
+                + "\n\nRe-emit only the files these diagnostics name, fixed."
+            )
         payload = self._call(GENUI_SYSTEM, prompt, FILE_BUNDLE_SCHEMA)
         return self._bundle(payload, ("lib/ui/",))
 

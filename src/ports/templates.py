@@ -38,6 +38,17 @@ def camel(text: str) -> str:
     return out[:1].lower() + out[1:]
 
 
+def yaml_scalar(value: str) -> str:
+    """Always-quote a YAML scalar.
+
+    PRD text is arbitrary: a description like "capture app: log offline" has an
+    unquoted colon that makes pubspec.yaml unparseable, and `flutter analyze`
+    dies before it reaches any Dart. Single-quoted style escapes only `'`.
+    """
+    collapsed = " ".join(value.split())
+    return "'" + collapsed.replace("'", "''") + "'"
+
+
 def dart_type(field_type: str) -> str:
     return {"text": "String", "number": "num", "bool": "bool", "date": "DateTime"}[field_type]
 
@@ -93,6 +104,20 @@ dev_dependencies:
 flutter:
   uses-material-design: true
 """)
+
+# Without this file `flutter_lints` sits in dev_dependencies and does nothing —
+# the analyzer runs with default rules only, so a green analysis says far less
+# than it appears to. CI is stricter than the default rule set.
+ANALYSIS_OPTIONS = """include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  errors:
+    # The generated tree is machine-written; treat sloppiness as fatal so the
+    # QA subagent sees it rather than a human reviewer.
+    unused_import: error
+    unused_local_variable: error
+    dead_code: error
+"""
 
 DESIGN = Template("""# DESIGN.md — $APP_NAME
 
@@ -371,13 +396,16 @@ class TemplateGenerator:
         )
         pubspec = PUBSPEC.safe_substitute(
             PKG=pkg,
-            DESCRIPTION=prd.description or prd.app_name,
+            DESCRIPTION=yaml_scalar(prd.description or prd.app_name),
         )
-        return Plan(design_md=design, pubspec=pubspec)
+        return Plan(design_md=design, pubspec=pubspec, analysis_options=ANALYSIS_OPTIONS)
 
     # -- genui subagent ----------------------------------------------------- #
 
-    def build_ui(self, prd: PRD, design_md: str) -> dict[str, str]:
+    def build_ui(
+        self, prd: PRD, design_md: str, diagnostics: list[Diagnostic] | None = None
+    ) -> dict[str, str]:
+        diagnostics = diagnostics or []
         models = {m.name: m for m in prd.models}
         files: dict[str, str] = {}
 
@@ -401,14 +429,25 @@ class TemplateGenerator:
             ROUTES=routes,
         )
 
-        if self.fault == "undefined_provider":
-            # Simulate the GenUI/Logic desync: watch a provider nobody declares.
+        # Faults are injected on the first pass only. A repair pass regenerates
+        # cleanly, which is what a real GenUI repair converges on.
+        if not diagnostics:
             target = screen_file(prd.screens[0])
-            files[target] = files[target].replace(
-                "    return Scaffold(",
-                "    ref.watch(unsyncedDraftProvider);\n    return Scaffold(",
-                1,
-            )
+            if self.fault == "undefined_provider":
+                # GenUI/Logic desync: watch a provider nobody declares. Owned by
+                # the Logic subagent, per CLAUDE.md §4.
+                files[target] = files[target].replace(
+                    "    return Scaffold(",
+                    "    ref.watch(unsyncedDraftProvider);\n    return Scaffold(",
+                    1,
+                )
+            elif self.fault == "setstate":
+                # A UI-owned violation: only GenUI can write lib/ui/ to fix it.
+                files[target] = files[target].replace(
+                    "    return Scaffold(",
+                    "    setState(() {});\n    return Scaffold(",
+                    1,
+                )
         return files
 
     def _render_screen(self, screen: Screen, model: DataModel | None) -> str:

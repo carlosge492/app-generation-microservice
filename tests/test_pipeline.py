@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 
 import pytest
+import yaml
 
 from src.build.pipeline import run_build
 from src.graph.builder import build_graph
 from src.graph.state import initial_state
 from src.payments.x402 import PaymentNotVerified, is_verified
-from src.ports.analyzer import StubAnalyzer
+from src.ports.analyzer import FlutterAnalyzer, StubAnalyzer
 from src.ports.generator import Plan
+from src.ports.ownership import owner_of
 from src.ports.templates import TemplateGenerator
 from src.prd.schema import PRD, load_prd
 
@@ -134,7 +136,38 @@ def test_repair_budget_is_enforced(prd, tmp_path):
     final = run(prd, tmp_path, fault="undefined_provider", max_repairs=0)
 
     assert final["diagnostics"], "expected the build to stay red"
-    assert final["repair_attempts"] == 0
+    # The counter ticks once per failed analysis, so a budget of 0 means the
+    # first failure is terminal.
+    assert final["repair_attempts"] == 1
+
+
+def test_ui_owned_fault_routes_to_genui(prd, tmp_path):
+    """A setState violation lives in lib/ui/, which only GenUI may write."""
+    final = run(prd, tmp_path, fault="setstate")
+
+    assert final["phase"] == "done", final.get("failure")
+    assert final["diagnostics"] == []
+    assert any("genui: repair pass" in line for line in final["log"])
+
+
+def test_unfixable_pubspec_fails_without_burning_the_budget(prd, tmp_path):
+    """Planning output is frozen; no downstream agent can repair it."""
+
+    class BadPlanGenerator(TemplateGenerator):
+        def plan(self, prd):
+            base = super().plan(prd)
+            return Plan(
+                design_md=base.design_md,
+                pubspec="name: x\ndescription: unquoted: colon breaks yaml\n",
+                analysis_options=base.analysis_options,
+            )
+
+    app = build_graph(BadPlanGenerator(), StubAnalyzer(), max_repairs=3, dry_run=True)
+    final = app.invoke(initial_state(prd.model_dump(mode="json"), str(tmp_path)))
+
+    assert final["diagnostics"]
+    assert {d.code for d in final["diagnostics"]} == {"unparseable_pubspec"}
+    assert final["repair_attempts"] == 1, "should fail fast, not loop"
 
 
 # --------------------------------------------------------------------------- #
@@ -215,8 +248,8 @@ def test_paid_prd_reaches_the_build_step(prd, tmp_path):
 class RogueGenerator(TemplateGenerator):
     """A GenUI subagent that tries to write business logic."""
 
-    def build_ui(self, prd, design_md):
-        files = super().build_ui(prd, design_md)
+    def build_ui(self, prd, design_md, diagnostics=None):
+        files = super().build_ui(prd, design_md, diagnostics)
         files["lib/providers/sneaky.dart"] = "// should never land"
         return files
 
@@ -241,3 +274,69 @@ def test_plan_emits_required_pubspec_keys(prd):
         assert key in plan.pubspec
     assert "Field Notes" in plan.design_md
     assert "lib/providers/**" in plan.design_md
+
+
+def test_pubspec_is_valid_yaml_despite_colons_in_description():
+    """Regression: an unquoted colon crashed the flutter tool before analysis."""
+    prd = PRD.model_validate({
+        "app_name": "Tricky",
+        "package_name": "com.example.tricky",
+        "description": "An app: it does things; it's \"quoted\" & 'awkward'",
+        "screens": [{"id": "home", "title": "Home", "kind": "settings"}],
+    })
+    parsed = yaml.safe_load(TemplateGenerator().plan(prd).pubspec)
+
+    assert parsed["description"] == "An app: it does things; it's \"quoted\" & 'awkward'"
+    assert parsed["name"] == "tricky"
+
+
+def test_plan_enables_the_linter():
+    """flutter_lints in dev_dependencies does nothing without this file."""
+    plan = TemplateGenerator().plan(load_prd(PRD_PATH))
+    assert "package:flutter_lints/flutter.yaml" in plan.analysis_options
+
+
+# --------------------------------------------------------------------------- #
+# Real-analyzer output parsing (no SDK required)
+# --------------------------------------------------------------------------- #
+
+
+def test_parses_flutter_analyze_text_output(tmp_path):
+    """Flutter 3.44 dropped machine-readable output, so we parse the text."""
+    line = (
+        "  error - A value of type 'String' can't be returned from the function "
+        "'_broken' because it has a return type of 'int' - "
+        "lib\\ui\\settings_screen.dart:21:24 - return_of_invalid_type"
+    )
+    d = FlutterAnalyzer._parse_line(line, tmp_path)
+
+    assert d is not None
+    assert d.severity == "error"
+    assert d.file == "lib/ui/settings_screen.dart"
+    assert d.line == 21
+    assert d.code == "return_of_invalid_type"
+    assert "can't be returned" in d.message
+
+
+def test_parses_warning_and_ignores_summary_lines(tmp_path):
+    warning = (
+        "warning - The declaration '_broken' isn't referenced - "
+        "lib\\ui\\settings_screen.dart:21:5 - unused_element"
+    )
+    assert FlutterAnalyzer._parse_line(warning, tmp_path).severity == "warning"
+
+    for noise in ["Analyzing current_build...", "2 issues found. (ran in 5.6s)", ""]:
+        assert FlutterAnalyzer._parse_line(noise, tmp_path) is None
+
+
+def test_real_analyzer_diagnostics_route_to_the_right_agent(tmp_path):
+    """A real dart error code has no explicit mapping — path decides."""
+    ui = FlutterAnalyzer._parse_line(
+        "  error - bad - lib\\ui\\home_screen.dart:3:1 - return_of_invalid_type", tmp_path
+    )
+    logic = FlutterAnalyzer._parse_line(
+        "  error - bad - lib\\providers\\x_providers.dart:3:1 - undefined_identifier",
+        tmp_path,
+    )
+    assert owner_of(ui) == "genui"
+    assert owner_of(logic) == "logic"

@@ -23,6 +23,7 @@ class BuildState(TypedDict, total=False):
     # --- planning subagent output ---
     design_md: str
     pubspec: str
+    analysis_options: str
 
     # --- genui subagent output: lib/ui/** only ---
     ui_files: dict[str, str]
@@ -62,6 +63,8 @@ def all_files(state: BuildState) -> dict[str, str]:
     files: dict[str, str] = {}
     if state.get("pubspec"):
         files["pubspec.yaml"] = state["pubspec"]
+    if state.get("analysis_options"):
+        files["analysis_options.yaml"] = state["analysis_options"]
     if state.get("design_md"):
         files["DESIGN.md"] = state["design_md"]
     files.update(state.get("ui_files", {}))

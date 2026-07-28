@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+import yaml
+
 
 class ToolchainUnavailable(RuntimeError):
     """Raised when a real toolchain is requested but not installed."""
@@ -85,11 +87,25 @@ class StubAnalyzer:
             return [Diagnostic("error", "pubspec.yaml", 0, "missing_pubspec",
                                "pubspec.yaml was never written by the planning subagent")]
         text = pubspec.read_text(encoding="utf-8")
-        missing = [k for k in ("name:", "environment:", "dependencies:") if k not in text]
+
+        # Parse, don't just grep. An unquoted colon in a PRD-supplied description
+        # yields a file that contains every required key and still crashes the
+        # flutter tool before analysis begins.
+        try:
+            parsed = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            detail = " ".join(str(exc).split())
+            return [Diagnostic("error", "pubspec.yaml", 0, "unparseable_pubspec",
+                               f"pubspec.yaml is not valid YAML: {detail}")]
+        if not isinstance(parsed, dict):
+            return [Diagnostic("error", "pubspec.yaml", 0, "unparseable_pubspec",
+                               "pubspec.yaml did not parse to a YAML mapping")]
+
         return [
             Diagnostic("error", "pubspec.yaml", 0, "incomplete_pubspec",
-                       f"pubspec.yaml is missing required key {k!r}")
-            for k in missing
+                       f"pubspec.yaml is missing required key {key!r}")
+            for key in ("name", "environment", "dependencies")
+            if key not in parsed
         ]
 
     def _declared_providers(self, provider_files: list[Path]) -> set[str]:
@@ -156,44 +172,104 @@ class StubAnalyzer:
 # Real implementation
 # --------------------------------------------------------------------------- #
 
-class DartSdkAnalyzer:
-    """Shells out to `dart analyze --format=json`.
+class FlutterAnalyzer:
+    """The real QA subagent: `flutter analyze`.
 
-    Mirrors CLAUDE.md §2's QA command. Unused until the Dart SDK is installed;
-    `StubAnalyzer` holds the seam open until then.
+    Neither `dart analyze` nor `flutter analyze` offers machine-readable output
+    on Flutter 3.44 (`--machine` is gone, `--format=json` never existed on the
+    Flutter wrapper), so we parse the text format:
+
+        error - <message> - <file>:<line>:<col> - <code>
+
+    `flutter analyze` runs `pub get` itself, which is the step that actually
+    gates analysis: without a `.dart_tool/package_config.json` every
+    `package:flutter/...` import is an unresolved-URI error and the real
+    diagnostics are buried. Platform folders (android/, ios/) are NOT needed to
+    analyse — they are a packaging concern.
     """
 
-    def __init__(self, executable: str = "dart") -> None:
-        self.executable = executable
+    # Trailing ` - ` separated fields, parsed right-to-left so a message
+    # containing " - " does not corrupt the split.
+    _SUMMARY = re.compile(r"^\d+ issue|^No issues|^Analyzing ")
+
+    def __init__(self, flutter_root: str | Path | None = None) -> None:
+        self.flutter_root = Path(flutter_root) if flutter_root else None
+
+    def _tool(self, name: str) -> str:
+        if self.flutter_root:
+            for candidate in (f"{name}.bat", name):
+                path = self.flutter_root / "bin" / candidate
+                if path.exists():
+                    return str(path)
+            raise ToolchainUnavailable(
+                f"{name!r} not found under {self.flutter_root / 'bin'}"
+            )
+        found = shutil.which(name)
+        if found is None:
+            raise ToolchainUnavailable(
+                f"{name!r} is not on PATH and no --flutter-root was given. Install the "
+                f"Flutter SDK, or run with --analyzer stub."
+            )
+        return found
 
     def analyze(self, project_dir: Path) -> list[Diagnostic]:
-        if shutil.which(self.executable) is None:
-            raise ToolchainUnavailable(
-                f"{self.executable!r} is not on PATH. Install the Flutter SDK, or run "
-                f"the supervisor with --analyzer=stub."
-            )
         proc = subprocess.run(
-            [self.executable, "analyze", "--format=json", str(project_dir)],
-            capture_output=True, text=True, check=False,
+            [self._tool("flutter"), "analyze", "--no-congratulate"],
+            cwd=project_dir, capture_output=True, text=True, check=False,
         )
-        if not proc.stdout.strip():
-            return []
-        payload = json.loads(proc.stdout)
-        return [
-            Diagnostic(
-                severity=d.get("severity", "error").lower(),
-                file=d.get("location", {}).get("file", "<unknown>"),
-                line=d.get("location", {}).get("range", {}).get("start", {}).get("line", 0),
-                code=d.get("code", "dart"),
-                message=d.get("problemMessage", ""),
+        # 0 = clean, 1 = issues found. Anything else is the tool itself failing
+        # (unresolvable dependencies, an unparseable pubspec, no network).
+        if proc.returncode not in (0, 1):
+            raise ToolchainUnavailable(
+                f"`flutter analyze` failed ({proc.returncode}) in {project_dir}:\n"
+                f"{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}"
             )
-            for d in payload.get("diagnostics", [])
-        ]
+
+        out: list[Diagnostic] = []
+        for line in proc.stdout.splitlines():
+            parsed = self._parse_line(line, project_dir)
+            if parsed is not None:
+                out.append(parsed)
+        return out
+
+    @classmethod
+    def _parse_line(cls, line: str, project_dir: Path) -> Diagnostic | None:
+        stripped = line.strip()
+        if not stripped or cls._SUMMARY.match(stripped):
+            return None
+        # severity - message - file:line:col - code
+        parts = stripped.rsplit(" - ", 2)
+        if len(parts) != 3:
+            return None
+        head, location, code = parts
+        severity, _, message = head.partition(" - ")
+        severity = severity.strip().lower()
+        if severity not in {"error", "warning", "info"}:
+            return None
+
+        file_part, _, line_col = location.rpartition(":")
+        file_part, _, line_no = file_part.rpartition(":")
+        if not file_part:
+            file_part, line_no = location, "0"
+
+        try:
+            # Ownership routing keys off repo-relative POSIX paths.
+            rel = Path(file_part).resolve().relative_to(project_dir.resolve()).as_posix()
+        except (ValueError, OSError):
+            rel = file_part.replace("\\", "/")
+
+        return Diagnostic(
+            severity=severity,
+            file=rel,
+            line=int(line_no) if line_no.isdigit() else 0,
+            code=code.strip(),
+            message=message.strip(),
+        )
 
 
-def get_analyzer(kind: str) -> DartAnalyzer:
+def get_analyzer(kind: str, flutter_root: str | Path | None = None) -> DartAnalyzer:
     if kind == "stub":
         return StubAnalyzer()
     if kind == "dart":
-        return DartSdkAnalyzer()
+        return FlutterAnalyzer(flutter_root)
     raise ValueError(f"unknown analyzer {kind!r}; expected 'stub' or 'dart'")

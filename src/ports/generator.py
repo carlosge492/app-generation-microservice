@@ -21,6 +21,7 @@ from src.prd.schema import PRD
 class Plan:
     design_md: str
     pubspec: str
+    analysis_options: str = ""
 
 
 class CodeGenerator(Protocol):
@@ -28,8 +29,14 @@ class CodeGenerator(Protocol):
         """Planning subagent: draft DESIGN.md and pubspec.yaml."""
         ...
 
-    def build_ui(self, prd: PRD, design_md: str) -> dict[str, str]:
-        """GenUI subagent: the widget tree only. Returns lib/ui/** paths."""
+    def build_ui(
+        self, prd: PRD, design_md: str, diagnostics: list[Diagnostic]
+    ) -> dict[str, str]:
+        """GenUI subagent: the widget tree only. Returns lib/ui/** paths.
+
+        `diagnostics` is non-empty on a repair pass and contains only the
+        UI-owned subset — patch what they name, don't regenerate blindly.
+        """
         ...
 
     def wire_logic(

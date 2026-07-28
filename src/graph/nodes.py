@@ -14,6 +14,7 @@ from src.graph.state import BuildState, all_files
 from src.payments.x402 import PaymentNotVerified
 from src.ports.analyzer import DartAnalyzer, ToolchainUnavailable
 from src.ports.generator import CodeGenerator
+from src.ports.ownership import owner_of, route_for
 from src.prd.schema import PRD
 
 Node = Callable[[BuildState], dict[str, Any]]
@@ -30,6 +31,7 @@ def make_planning_node(generator: CodeGenerator) -> Node:
         return {
             "design_md": plan.design_md,
             "pubspec": plan.pubspec,
+            "analysis_options": plan.analysis_options,
             "phase": "genui",
             "log": [f"planning: DESIGN.md ({len(plan.design_md)} chars) + pubspec.yaml drafted"],
         }
@@ -40,7 +42,11 @@ def make_planning_node(generator: CodeGenerator) -> Node:
 def make_genui_node(generator: CodeGenerator) -> Node:
     def genui(state: BuildState) -> dict[str, Any]:
         prd = _prd(state)
-        files = generator.build_ui(prd, state["design_md"])
+        # Only the diagnostics this agent can actually act on.
+        mine = [d for d in state.get("diagnostics", []) if owner_of(d) == "genui"]
+        repairing = bool(mine)
+
+        files = generator.build_ui(prd, state["design_md"], mine)
         stray = [p for p in files if not p.startswith("lib/ui/")]
         if stray:
             return {
@@ -48,11 +54,14 @@ def make_genui_node(generator: CodeGenerator) -> Node:
                 "failure": f"GenUI subagent wrote outside lib/ui/: {stray}",
                 "log": [f"genui: REJECTED {len(stray)} out-of-lane file(s)"],
             }
-        return {
-            "ui_files": files,
-            "phase": "logic",
-            "log": [f"genui: {len(files)} widget file(s) written"],
-        }
+
+        merged = {**state.get("ui_files", {}), **files} if repairing else files
+        note = (
+            f"genui: repair pass against {len(mine)} UI diagnostic(s)"
+            if repairing
+            else f"genui: {len(files)} widget file(s) written"
+        )
+        return {"ui_files": merged, "phase": "logic", "log": [note]}
 
     return genui
 
@@ -60,7 +69,8 @@ def make_genui_node(generator: CodeGenerator) -> Node:
 def make_logic_node(generator: CodeGenerator) -> Node:
     def logic(state: BuildState) -> dict[str, Any]:
         prd = _prd(state)
-        diagnostics = state.get("diagnostics", [])
+        # Only the diagnostics this agent can actually act on.
+        diagnostics = [d for d in state.get("diagnostics", []) if owner_of(d) == "logic"]
         repairing = bool(diagnostics)
 
         files = generator.wire_logic(prd, state["design_md"], state["ui_files"], diagnostics)
@@ -75,17 +85,11 @@ def make_logic_node(generator: CodeGenerator) -> Node:
 
         merged = {**state.get("provider_files", {}), **files} if repairing else files
         note = (
-            f"logic: repair pass #{state.get('repair_attempts', 0) + 1} "
-            f"against {len(diagnostics)} diagnostic(s)"
+            f"logic: repair pass against {len(diagnostics)} state diagnostic(s)"
             if repairing
             else f"logic: {len(files)} state file(s) written"
         )
-        return {
-            "provider_files": merged,
-            "repair_attempts": state.get("repair_attempts", 0) + (1 if repairing else 0),
-            "phase": "qa",
-            "log": [note],
-        }
+        return {"provider_files": merged, "phase": "qa", "log": [note]}
 
     return logic
 
@@ -111,9 +115,13 @@ def make_qa_node(analyzer: DartAnalyzer) -> Node:
             }
 
         errors = [d for d in diagnostics if d.severity == "error"]
+        # The repair counter lives here so it ticks once per failed analysis,
+        # regardless of how many agents the router then involves.
+        attempts = state.get("repair_attempts", 0) + (1 if errors else 0)
         return {
             "diagnostics": errors,
-            "phase": "packaging" if not errors else "logic",
+            "repair_attempts": attempts,
+            "phase": "packaging" if not errors else "qa",
             "log": [
                 f"qa: {len(files)} file(s) analysed, "
                 f"{len(errors)} error(s), {len(diagnostics) - len(errors)} non-fatal"
@@ -150,11 +158,14 @@ def make_router(max_repairs: int) -> Callable[[BuildState], str]:
     def route_after_qa(state: BuildState) -> str:
         if state.get("phase") == "failed":
             return "fail"
-        if not state.get("diagnostics"):
+        diagnostics = state.get("diagnostics", [])
+        if not diagnostics:
             return "package"
-        if state.get("repair_attempts", 0) >= max_repairs:
+        if state.get("repair_attempts", 0) > max_repairs:
             return "fail"
-        return "repair"
+        # Send the batch to whichever agent owns it; upstream-owned diagnostics
+        # (frozen pubspec/DESIGN.md) are unfixable and fail fast.
+        return route_for(diagnostics)
 
     return route_after_qa
 

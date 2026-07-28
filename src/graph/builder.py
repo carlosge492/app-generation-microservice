@@ -1,12 +1,15 @@
 """LangGraph wiring for the build loop.
 
     plan -> genui -> logic -> qa -+-> package -> END
-                      ^           |
-                      +--repair---+   (bounded by --max-repairs)
+             ^        ^           |
+             +--------+--repair---+   (bounded by --max-repairs)
 
-The repair edge goes back to `logic`, never to `genui`: QA diagnostics are fed to
-the Logic subagent to patch the specific callback (CLAUDE.md §4). DESIGN.md is
-never revisited — changes flow downstream only.
+The repair edge routes by *diagnostic ownership*, not blindly to Logic: an error
+anchored in `lib/ui/` can only be fixed by GenUI, which may write there. See
+`src/ports/ownership.py` for the mapping and why it refines CLAUDE.md §4.
+Planning output (pubspec.yaml, DESIGN.md) is frozen once GenUI starts, so
+diagnostics against it fail the build rather than looping — changes flow
+downstream, never upstream.
 """
 
 from __future__ import annotations
@@ -55,7 +58,12 @@ def build_graph(
     graph.add_conditional_edges(
         "qa",
         make_router(max_repairs),
-        {"package": "package", "repair": "logic", "fail": END},
+        {
+            "package": "package",
+            "repair_ui": "genui",     # UI-owned diagnostics; flows on to logic
+            "repair_logic": "logic",  # state-owned diagnostics
+            "fail": END,
+        },
     )
     graph.add_edge("package", END)
 
