@@ -665,28 +665,20 @@ class TemplateGenerator:
             FRAMEWORK="cupertino" if prd.theme == "cupertino" else "material",
         )
 
-        # Repair pass: declare exactly the providers QA reported as undefined,
-        # rather than regenerating the file wholesale (CLAUDE.md §4).
-        missing = sorted(
-            {
-                m.group(1)
-                for d in diagnostics
-                if d.code == "undefined_provider"
-                for m in [re.search(r"provider '([^']+)'", d.message)]
-                if m
-            }
-        )
-        if missing:
-            patch = ["import 'package:flutter_riverpod/flutter_riverpod.dart';", ""]
-            patch += [
-                f"// Declared by the Logic subagent to resolve QA diagnostic "
-                f"`undefined_provider` for {name!r}.\n"
-                f"final {name} = StateProvider<Map<String, dynamic>>((ref) "
-                "=> <String, dynamic>{});"
-                for name in missing
-            ]
-            files["lib/providers/repair_providers.dart"] = "\n".join(patch) + "\n"
-
+        # No fabricated providers here, deliberately.
+        #
+        # An earlier version answered `undefined_provider` by declaring a
+        # throwaway `StateProvider<Map<String, dynamic>>` named after whatever
+        # the UI referenced. That silenced the diagnostic without making the app
+        # any more correct: a green build backed by a provider that reads
+        # nothing and means nothing. It made the repair loop look like it worked
+        # while measuring only its own output.
+        #
+        # The Logic subagent's honest answer is the providers the PRD implies,
+        # which is exactly what it generates above. If the UI references
+        # something with no basis in the PRD, Logic genuinely cannot fix it, the
+        # diagnostic survives, and the router escalates to GenUI to stop
+        # referencing it. See `make_router`.
         return files
 
     def _render_providers(self, model: DataModel) -> str:

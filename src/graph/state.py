@@ -35,6 +35,11 @@ class BuildState(TypedDict, total=False):
     test_files: dict[str, str]
     diagnostics: list[Diagnostic]
     repair_attempts: int
+    # Signature of the previous round's diagnostics, and whether this round is
+    # identical to it. A stalled round means the owning agent had its turn and
+    # changed nothing, so the router hands the problem to the other agent.
+    diagnostic_signature: list[str]
+    stalled: bool
 
     # --- packaging gate ---
     x402_payment_verified: bool

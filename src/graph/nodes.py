@@ -51,7 +51,10 @@ def make_genui_node(generator: CodeGenerator) -> Node:
     def genui(state: BuildState) -> dict[str, Any]:
         prd = _prd(state)
         # Only the diagnostics this agent can actually act on.
-        mine = [d for d in state.get("diagnostics", []) if owner_of(d) == "genui"]
+        diags = state.get("diagnostics", [])
+        # On a stalled round this agent is the escalation target, so it takes
+        # the whole batch rather than only what it nominally owns.
+        mine = diags if state.get("stalled") else [d for d in diags if owner_of(d) == "genui"]
         repairing = bool(mine)
 
         files = generator.build_ui(prd, state["design_md"], mine)
@@ -78,7 +81,8 @@ def make_logic_node(generator: CodeGenerator) -> Node:
     def logic(state: BuildState) -> dict[str, Any]:
         prd = _prd(state)
         # Only the diagnostics this agent can actually act on.
-        diagnostics = [d for d in state.get("diagnostics", []) if owner_of(d) == "logic"]
+        _all = state.get("diagnostics", [])
+        diagnostics = _all if state.get("stalled") else [d for d in _all if owner_of(d) == "logic"]
         repairing = bool(diagnostics)
 
         files = generator.wire_logic(prd, state["design_md"], state["ui_files"], diagnostics)
@@ -146,6 +150,11 @@ def make_qa_node(analyzer: DartAnalyzer, runner: TestRunner | None = None) -> No
         # The repair counter lives here so it ticks once per failed analysis,
         # regardless of how many agents the router then involves.
         attempts = state.get("repair_attempts", 0) + (1 if errors else 0)
+
+        # Identical diagnostics two rounds running means the last repair pass
+        # accomplished nothing.
+        signature = sorted(f"{d.code}:{d.file}:{d.line}" for d in errors)
+        stalled = bool(errors) and signature == state.get("diagnostic_signature")
         note = (
             f"qa: {len(files)} file(s) analysed ({len(smoke)} smoke test(s)), "
             f"{len(errors)} error(s), "
@@ -153,8 +162,12 @@ def make_qa_node(analyzer: DartAnalyzer, runner: TestRunner | None = None) -> No
         )
         if escalated:
             note += f" ({escalated} escalated as unwired/dead code)"
+        if stalled:
+            note += " [stalled — escalating to the other agent]"
         return {
             "diagnostics": errors,
+            "diagnostic_signature": signature,
+            "stalled": stalled,
             "test_files": smoke,
             "repair_attempts": attempts,
             "phase": "packaging" if not errors else "qa",
@@ -198,7 +211,14 @@ def make_router(max_repairs: int) -> Callable[[BuildState], str]:
             return "fail"
         # Send the batch to whichever agent owns it; upstream-owned diagnostics
         # (frozen pubspec/DESIGN.md) are unfixable and fail fast.
-        return route_for(diagnostics)
+        target = route_for(diagnostics)
+        if state.get("stalled") and target in ("repair_ui", "repair_logic"):
+            # The owner had its turn and changed nothing. Rather than spend the
+            # rest of the budget re-running it, give the other agent the problem:
+            # a provider the PRD does not justify is fixed by the UI dropping the
+            # reference, not by Logic inventing something to satisfy it.
+            return "repair_logic" if target == "repair_ui" else "repair_ui"
+        return target
 
     return route_after_qa
 

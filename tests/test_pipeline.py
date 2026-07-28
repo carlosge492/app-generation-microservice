@@ -128,13 +128,47 @@ def test_ui_never_imports_firebase(prd, tmp_path):
 
 
 def test_provider_desync_is_repaired(prd, tmp_path):
+    """The UI references a provider with no basis in the PRD.
+
+    Logic cannot honestly satisfy that, so it changes nothing; the round stalls
+    and the router escalates to GenUI, which drops the reference. Two rounds,
+    and the app is actually correct at the end of them.
+    """
     final = run(prd, tmp_path, fault="undefined_provider")
 
     assert final["phase"] == "done", final.get("failure")
     assert final["diagnostics"] == []
-    assert final["repair_attempts"] == 1
-    assert (tmp_path / "lib/providers/repair_providers.dart").exists()
-    assert any("repair pass" in line for line in final["log"])
+    assert final["repair_attempts"] == 2, "expected a stalled Logic pass, then GenUI"
+    assert any("stalled" in line for line in final["log"])
+
+    # The fix is real: nothing references the bogus provider any more...
+    for path in (tmp_path / "lib").rglob("*.dart"):
+        assert "unsyncedDraftProvider" not in path.read_text(encoding="utf-8"), path
+    # ...and no provider was fabricated to paper over it.
+    assert not (tmp_path / "lib/providers/repair_providers.dart").exists()
+
+
+def test_repair_never_fabricates_a_provider(prd, tmp_path):
+    """Regression: the loop used to answer `undefined_provider` by declaring a
+    throwaway StateProvider named after whatever the UI referenced. That went
+    green without making the app any more correct."""
+    final = run(prd, tmp_path, fault="undefined_provider")
+
+    declared = "\n".join(final["provider_files"].values())
+    assert "StateProvider<Map<String, dynamic>>" not in declared
+    assert all("repair" not in p for p in final["provider_files"])
+
+
+def test_stalled_round_escalates_to_the_other_agent(prd, tmp_path):
+    """A diagnostic its owner cannot fix must not burn the whole budget."""
+    from src.graph.nodes import make_router
+
+    stuck = [Diagnostic("error", "lib/providers/x.dart", 1, "ui_in_logic", "x")]
+    state = {"diagnostics": stuck, "repair_attempts": 1}
+
+    router = make_router(max_repairs=3)
+    assert router(state) == "repair_logic"
+    assert router({**state, "stalled": True}) == "repair_ui"
 
 
 def test_repair_budget_is_enforced(prd, tmp_path):
