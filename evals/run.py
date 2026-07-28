@@ -28,13 +28,24 @@ from dotenv import load_dotenv  # noqa: E402
 
 from src.graph.builder import build_graph  # noqa: E402
 from src.graph.state import initial_state  # noqa: E402
-from src.ports.analyzer import get_analyzer  # noqa: E402
+from src.ports.analyzer import get_analyzer, is_fatal  # noqa: E402
+from src.ports.conformance import check_conformance  # noqa: E402
 from src.ports.generator import get_generator
 from src.ports.runtime import FlutterTestRunner  # noqa: E402
+from src.ports.smoke import build_smoke_tests  # noqa: E402
 from src.prd.schema import load_prd  # noqa: E402
 
 PRD_DIRS = [Path("evals/prds"), Path("examples")]
+# Per-generator, because they are not interchangeable. A template sweep run as
+# a "free regression check" once overwrote a paid Claude sweep's output, and the
+# regrade that followed silently graded the wrong code — reporting 10/11 for a
+# model whose output no longer existed on disk. Sweeps must not clobber each
+# other's evidence.
 OUT_ROOT = Path("generated_apps") / "evals"
+
+
+def out_root(generator: str) -> Path:
+    return OUT_ROOT / generator
 
 
 @dataclass
@@ -55,6 +66,66 @@ def collect_prds() -> list[Path]:
     for directory in PRD_DIRS:
         found.extend(sorted(directory.glob("*.json")))
     return found
+
+
+SOURCE_SUFFIXES = (".dart", ".yaml", ".md")
+
+
+def _read_project(out_dir: Path) -> dict[str, str]:
+    """Load a previously generated project back into the pipeline's file map."""
+    files: dict[str, str] = {}
+    for path in out_dir.rglob("*"):
+        if not path.is_file() or path.suffix not in SOURCE_SUFFIXES:
+            continue
+        parts = path.relative_to(out_dir).parts
+        if any(p in {".dart_tool", "build", "android", "ios", "test"} for p in parts):
+            continue
+        files["/".join(parts)] = path.read_text(encoding="utf-8")
+    return files
+
+
+def regrade_one(prd_path: Path, out_dir: Path, analyzer, runner) -> Result:
+    """Grade output already on disk, without invoking a generator.
+
+    Grading improved after these builds were produced, and regenerating them
+    would cost another sweep's worth of API calls to re-test code that has not
+    changed. This re-runs conformance, static analysis and the widget tests
+    against what is already there.
+    """
+    name = prd_path.stem.replace(".prd", "")
+    started = time.time()
+    if not (out_dir / "lib").exists():
+        return Result(name, False, "no generated output on disk to regrade", 0.0)
+
+    prd = load_prd(prd_path)
+    files = _read_project(out_dir)
+
+    # Smoke tests are regenerated from the current sources; stale ones from an
+    # earlier generator would fail analysis for files that no longer exist.
+    for old in (out_dir / "test").glob("*.dart"):
+        old.unlink()
+    for rel, body in build_smoke_tests(prd, files).items():
+        target = out_dir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+
+    diagnostics = list(check_conformance(prd, files))
+    try:
+        diagnostics += analyzer.analyze(out_dir)
+        if runner is not None:
+            diagnostics += runner.run(out_dir)
+    except Exception as exc:
+        return Result(name, False, f"{type(exc).__name__}: {str(exc)[:160]}",
+                      time.time() - started)
+
+    fatal = [d for d in diagnostics if is_fatal(d)]
+    elapsed = time.time() - started
+    if fatal:
+        summary = "; ".join(d.render() for d in fatal[:3])
+        if len(fatal) > 3:
+            summary += f" (+{len(fatal) - 3} more)"
+        return Result(name, False, f"{len(fatal)} unresolved: {summary}", elapsed)
+    return Result(name, True, f"clean, {len(files)} source file(s)", elapsed)
 
 
 def run_one(path: Path, app, out_dir: Path) -> Result:
@@ -119,10 +190,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-tests", action="store_true",
                         help="also run the generated widget smoke tests "
                              "(requires the Flutter SDK)")
+    parser.add_argument("--regrade", action="store_true",
+                        help="grade output already on disk; no generator, no API calls")
     parser.add_argument("--filter", default="", help="only run PRDs whose name contains this")
     args = parser.parse_args(argv)
 
-    if args.generator == "claude" and not os.getenv("ANTHROPIC_API_KEY"):
+    if args.generator == "claude" and not args.regrade and not os.getenv("ANTHROPIC_API_KEY"):
         print(
             "error: --generator claude needs ANTHROPIC_API_KEY (set it in .env). "
             "Failing now rather than once per PRD.",
@@ -135,6 +208,19 @@ def main(argv: list[str] | None = None) -> int:
         print("no PRDs found", file=sys.stderr)
         return 2
 
+    if args.regrade:
+        analyzer = get_analyzer(args.analyzer, args.flutter_root)
+        runner = FlutterTestRunner(args.flutter_root) if args.run_tests else None
+        print(f"{len(prds)} PRD(s) | REGRADE of {out_root(args.generator)} "
+              f"| analyzer={args.analyzer}")
+        print("=" * 78)
+        results = [
+            regrade_one(p, out_root(args.generator) / p.stem.replace(".prd", ""),
+                        analyzer, runner)
+            for p in prds
+        ]
+        return _report(results)
+
     app = build_graph(
         get_generator(args.generator),
         get_analyzer(args.analyzer, args.flutter_root),
@@ -143,11 +229,18 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=True,
     )
 
-    print(f"{len(prds)} PRD(s) | generator={args.generator} analyzer={args.analyzer}")
+    print(f"{len(prds)} PRD(s) | generator={args.generator} analyzer={args.analyzer} "
+          f"| out={out_root(args.generator)}")
     print("=" * 78)
 
-    results = [run_one(p, app, OUT_ROOT / p.stem.replace(".prd", "")) for p in prds]
+    results = [
+        run_one(p, app, out_root(args.generator) / p.stem.replace(".prd", ""))
+        for p in prds
+    ]
+    return _report(results)
 
+
+def _report(results: list[Result]) -> int:
     width = max(len(r.name) for r in results)
     for r in results:
         repairs = f" r{r.repairs}" if r.repairs else "   "
