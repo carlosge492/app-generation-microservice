@@ -18,7 +18,11 @@ from src.ports.generator import Plan
 from src.ports.ownership import owner_of
 from src.ports.runtime import _parse_runner_output
 from src.ports.smoke import build_smoke_tests
-from src.ports.templates import TemplateGenerator, dart_string
+from src.ports.templates import (
+    TemplateGenerator,
+    dart_string,
+    repair_pubspec_description,
+)
 from src.prd.schema import PRD, load_prd
 
 PRD_PATH = "examples/todo_app.prd.json"
@@ -196,9 +200,12 @@ def test_unfixable_pubspec_fails_without_burning_the_budget(prd, tmp_path):
     class BadPlanGenerator(TemplateGenerator):
         def plan(self, prd):
             base = super().plan(prd)
+            # Structurally broken, not merely an unquoted description — that
+            # case is now repaired automatically, so it no longer exercises
+            # the frozen-planning-output path.
             return Plan(
                 design_md=base.design_md,
-                pubspec="name: x\ndescription: unquoted: colon breaks yaml\n",
+                pubspec="name: x\ndeps: [unclosed\n  nested: {\n",
                 analysis_options=base.analysis_options,
             )
 
@@ -703,6 +710,43 @@ def test_conformance_passes_on_real_generated_output():
         files = {**ui, **logic, "pubspec.yaml": plan.pubspec,
                  "analysis_options.yaml": plan.analysis_options}
         assert check_conformance(prd, files) == [], name
+
+
+def test_model_written_pubspec_description_is_repaired():
+    """A live model wrote `description: Auth-first app: sign in, browse.` — the
+    same unquoted-colon break our own templates hit in Phase 1. The manifest is
+    frozen planning output, so nothing downstream could repair it; punctuation
+    is not design, so we repair it ourselves."""
+    broken = (
+        "name: gated\n"
+        "description: Auth-first app: sign in, browse.\n"
+        "version: 1.0.0\n"
+    )
+    with pytest.raises(yaml.YAMLError):
+        yaml.safe_load(broken)
+
+    parsed = yaml.safe_load(repair_pubspec_description(broken))
+    assert parsed["description"] == "Auth-first app: sign in, browse."
+    assert parsed["name"] == "gated"
+
+
+def test_pubspec_repair_gives_up_on_other_breakage():
+    """Narrow by design: anything but the description is conformance's problem."""
+    other = "name: x\ndeps: [unclosed\n  nested: {\n"
+    assert repair_pubspec_description(other) == other
+
+
+def test_smoke_tests_use_the_pubspec_package_name_not_the_prd():
+    """A generator that names its package anything other than snake(app_name)
+    made every `package:` import in the generated tests unresolvable."""
+    prd = load_prd(PRD_PATH)
+    gen = TemplateGenerator()
+    ui = gen.build_ui(prd, "", [])
+    files = {**ui, **gen.wire_logic(prd, "", ui, []), "pubspec.yaml": "name: renamed_pkg\n"}
+
+    body = next(iter(build_smoke_tests(prd, files).values()))
+    assert "package:renamed_pkg/" in body
+    assert "package:field_notes/" not in body
 
 
 def test_plan_enables_the_linter():

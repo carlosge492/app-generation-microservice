@@ -48,8 +48,20 @@ _PROVIDER_REF = re.compile(r"\bref\.(?:watch|read)\(\s*([a-zA-Z_]\w*)\s*[.)]")
 TEST_HEADER = "// GENERATED — asserts the screen builds without throwing.\n"
 
 
-def _package_name(prd: PRD) -> str:
-    return snake(prd.app_name)
+_PUBSPEC_NAME = re.compile(r"^name:\s*['\"]?([a-z_][a-z0-9_]*)['\"]?\s*$", re.M)
+
+
+def _package_name(prd: PRD, files: dict[str, str]) -> str:
+    """The Dart package name, read from the manifest that will actually be used.
+
+    Deriving it from the PRD assumed TemplateGenerator's convention, where the
+    pubspec is named `snake(app_name)`. A generator that picks any other name
+    makes every `package:<pkg>/...` import in these tests point at a package
+    that does not exist, and the whole test file fails to resolve — which reads
+    as broken generated code rather than a broken test generator.
+    """
+    match = _PUBSPEC_NAME.search(files.get("pubspec.yaml", ""))
+    return match.group(1) if match else snake(prd.app_name)
 
 
 def _discover_async_providers(files: dict[str, str]) -> dict[str, tuple[str, str, str]]:
@@ -65,7 +77,7 @@ def _discover_async_providers(files: dict[str, str]) -> dict[str, tuple[str, str
 
 def build_smoke_tests(prd: PRD, files: dict[str, str]) -> dict[str, str]:
     """Return test/**_smoke_test.dart for every generated screen widget."""
-    pkg = _package_name(prd)
+    pkg = _package_name(prd, files)
     framework = "cupertino" if prd.theme == "cupertino" else "material"
     app_widget = "CupertinoApp" if prd.theme == "cupertino" else "MaterialApp"
     streams = _discover_async_providers(files)

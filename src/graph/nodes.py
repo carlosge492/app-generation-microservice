@@ -24,7 +24,7 @@ from src.ports.generator import CodeGenerator
 from src.ports.ownership import owner_of, route_for
 from src.ports.runtime import TestRunner
 from src.ports.smoke import build_smoke_tests
-from src.ports.templates import ensure_lint_dependency
+from src.ports.templates import ensure_lint_dependency, repair_pubspec_description
 from src.prd.schema import PRD
 
 Node = Callable[[BuildState], dict[str, Any]]
@@ -41,7 +41,7 @@ def make_planning_node(generator: CodeGenerator) -> Node:
         return {
             "design_md": plan.design_md,
             # Infrastructure we own, like analysis_options.yaml itself.
-            "pubspec": ensure_lint_dependency(plan.pubspec),
+            "pubspec": ensure_lint_dependency(repair_pubspec_description(plan.pubspec)),
             "analysis_options": plan.analysis_options,
             "phase": "genui",
             "log": [f"planning: DESIGN.md ({len(plan.design_md)} chars) + pubspec.yaml drafted"],

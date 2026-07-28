@@ -14,6 +14,8 @@ from __future__ import annotations
 import re
 from string import Template
 
+import yaml
+
 from src.ports.analyzer import Diagnostic
 from src.ports.generator import Plan
 from src.prd.schema import PRD, DataModel, Screen
@@ -47,6 +49,40 @@ def yaml_scalar(value: str) -> str:
     """
     collapsed = " ".join(value.split())
     return "'" + collapsed.replace("'", "''") + "'"
+
+
+def repair_pubspec_description(pubspec: str) -> str:
+    """Quote an unquoted `description:` if that is what makes the manifest invalid.
+
+    Our own templates learned this in Phase 1 (`yaml_scalar`), but a model
+    writing the manifest rediscovers it: "Auth-first app: sign in, browse" has a
+    colon, so the YAML is unparseable and `flutter analyze` aborts with a scanner
+    stack trace. The manifest is planning output and therefore frozen, so nothing
+    downstream can repair it — but this is punctuation, not design, and it is the
+    single most common way a generated pubspec breaks.
+
+    Deliberately narrow: if quoting the description does not make it parse, the
+    original is returned unchanged and conformance reports `unparseable_pubspec`.
+    """
+    try:
+        yaml.safe_load(pubspec)
+        return pubspec
+    except yaml.YAMLError:
+        pass
+
+    lines = pubspec.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("description:"):
+            value = line[len("description:"):].strip()
+            if value and value[0] not in "'\"":
+                lines[i] = "description: " + yaml_scalar(value)
+    repaired = "\n".join(lines) + "\n"
+
+    try:
+        yaml.safe_load(repaired)
+    except yaml.YAMLError:
+        return pubspec  # broken some other way; let conformance report it
+    return repaired
 
 
 def ensure_lint_dependency(pubspec: str, version: str = "^4.0.0") -> str:
