@@ -12,7 +12,12 @@ from typing import Any, Callable
 from src.build.pipeline import run_build
 from src.graph.state import BuildState, all_files
 from src.payments.x402 import PaymentNotVerified
-from src.ports.analyzer import DartAnalyzer, ToolchainUnavailable
+from src.ports.analyzer import (
+    HALLUCINATION_WARNINGS,
+    DartAnalyzer,
+    ToolchainUnavailable,
+    is_fatal,
+)
 from src.ports.conformance import check_conformance
 from src.ports.generator import CodeGenerator
 from src.ports.ownership import owner_of, route_for
@@ -119,18 +124,25 @@ def make_qa_node(analyzer: DartAnalyzer) -> Node:
         # the one the PRD asked for. Neither subsumes the other.
         diagnostics = diagnostics + check_conformance(_prd(state), files)
 
-        errors = [d for d in diagnostics if d.severity == "error"]
+        errors = [d for d in diagnostics if is_fatal(d)]
+        escalated = sum(
+            1 for d in errors
+            if d.severity != "error" and d.code in HALLUCINATION_WARNINGS
+        )
         # The repair counter lives here so it ticks once per failed analysis,
         # regardless of how many agents the router then involves.
         attempts = state.get("repair_attempts", 0) + (1 if errors else 0)
+        note = (
+            f"qa: {len(files)} file(s) analysed, {len(errors)} error(s), "
+            f"{len(diagnostics) - len(errors)} non-fatal"
+        )
+        if escalated:
+            note += f" ({escalated} escalated as unwired/dead code)"
         return {
             "diagnostics": errors,
             "repair_attempts": attempts,
             "phase": "packaging" if not errors else "qa",
-            "log": [
-                f"qa: {len(files)} file(s) analysed, "
-                f"{len(errors)} error(s), {len(diagnostics) - len(errors)} non-fatal"
-            ],
+            "log": [note],
         }
 
     return qa

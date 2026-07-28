@@ -48,6 +48,68 @@ def check_conformance(prd: PRD, files: dict[str, str]) -> list[Diagnostic]:
     out += _check_screens(prd, ui, files)
     out += _check_models(prd, logic)
     out += _check_form_fields(prd, files)
+    out += _check_unwired_declarations(files)
+    return out
+
+
+# Top-level declarations only. Matched per line rather than with a multiline
+# regex: `\s` inside a character class silently consumes indentation, which made
+# an earlier version flag every class *method* as top-level.
+_CLASS_LINE = re.compile(r"(?:class|mixin|enum|extension)\s+([A-Za-z]\w*)")
+# Requires the opening brace but not end-of-line, so a single-line body
+# (`String f(String s) { return s; }`) is matched as well as a multi-line one.
+_FUNC_LINE = re.compile(r"[\w<>,?\[\]]+\s+([a-z]\w*)\s*\([^)]*\)\s*(?:async\s*)?\{")
+_VAR_LINE = re.compile(r"(?:final|const)\s+(?:[\w<>,?\[\]]+\s+)?([a-z]\w*)\s*=")
+
+# `main` is called by the Flutter engine, never from Dart source.
+_ENTRYPOINTS = {"main"}
+
+
+def _top_level_names(body: str) -> set[str]:
+    """Names declared at column 0. A leading space means it is nested."""
+    names: set[str] = set()
+    for line in body.splitlines():
+        if not line or line[0].isspace() or line.lstrip().startswith(("//", "import", "@")):
+            continue
+        for pattern in (_CLASS_LINE, _FUNC_LINE, _VAR_LINE):
+            found = pattern.match(line)
+            if found:
+                names.add(found.group(1))
+                break
+    return names
+
+
+def _check_unwired_declarations(files: dict[str, str]) -> list[Diagnostic]:
+    """Public top-level declarations that nothing references.
+
+    `dart analyze` reports `unused_element` for *private* declarations only — it
+    cannot know whether an external package imports a public one. A generated
+    single-app tree has no external importers, so that reasoning does not apply
+    and the blind spot is real: a model that writes `String formatSubtitle(...)`
+    and never calls it produces a completely clean analysis.
+
+    That is the more likely hallucination shape, too, since nothing pushes a
+    model towards the `_` prefix that would have made the analyzer care.
+    """
+    lib = {k: v for k, v in files.items() if k.startswith("lib/")}
+    blob = "\n".join(lib.values())
+    out: list[Diagnostic] = []
+
+    for path, body in sorted(lib.items()):
+        for name in sorted(_top_level_names(body)):
+            if name in _ENTRYPOINTS or name.startswith("_"):
+                continue
+            # The declaration itself is one occurrence; a wired declaration has
+            # at least one more.
+            if len(re.findall(rf"\b{re.escape(name)}\b", blob)) < 2:
+                line = next(
+                    (n for n, ln in enumerate(body.splitlines(), 1) if name in ln), 0
+                )
+                out.append(Diagnostic(
+                    "error", path, line, "unwired_declaration",
+                    f"{name!r} is declared but never referenced anywhere in lib/; "
+                    f"either wire it up or do not generate it",
+                ))
     return out
 
 

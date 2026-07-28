@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import glob
 import json
 import re
 
@@ -10,8 +11,8 @@ from src.build.pipeline import run_build
 from src.graph.builder import build_graph
 from src.graph.state import initial_state
 from src.payments.x402 import PaymentNotVerified, is_verified
-from src.ports.analyzer import FlutterAnalyzer, StubAnalyzer
-from src.ports.conformance import check_conformance
+from src.ports.analyzer import Diagnostic, FlutterAnalyzer, StubAnalyzer, is_fatal
+from src.ports.conformance import _top_level_names, check_conformance
 from src.ports.generator import Plan
 from src.ports.ownership import owner_of
 from src.ports.templates import TemplateGenerator, dart_string
@@ -204,6 +205,110 @@ def test_analyzer_flags_widget_build_in_providers(tmp_path):
 
     codes = {d.code for d in StubAnalyzer().analyze(tmp_path)}
     assert "ui_in_logic" in codes
+
+
+# --------------------------------------------------------------------------- #
+# Unwired-code escalation
+# --------------------------------------------------------------------------- #
+
+
+def _warning(code: str, file: str = "lib/ui/home_screen.dart") -> Diagnostic:
+    return Diagnostic("warning", file, 3, code, "not referenced")
+
+
+@pytest.mark.parametrize(
+    "code", ["unused_element", "unused_field", "unused_local_variable", "dead_code"]
+)
+def test_orphaned_code_warnings_break_the_build(code):
+    """In generated code an unreferenced declaration is an unwired hallucination,
+    not untidiness: the model wrote a helper and never called it."""
+    assert is_fatal(_warning(code)) is True
+
+
+@pytest.mark.parametrize("code", ["prefer_const_constructors", "avoid_print", "todo"])
+def test_ordinary_style_warnings_do_not_break_the_build(code):
+    assert is_fatal(_warning(code)) is False
+
+
+def test_errors_remain_fatal_regardless_of_code():
+    assert is_fatal(Diagnostic("error", "lib/ui/a.dart", 1, "anything", "boom")) is True
+
+
+def test_escalated_warning_routes_to_its_owner():
+    """Escalation must not bypass ownership routing."""
+    assert owner_of(_warning("unused_element", "lib/ui/home_screen.dart")) == "genui"
+    assert owner_of(_warning("unused_element", "lib/providers/x.dart")) == "logic"
+
+
+def test_qa_node_escalates_a_warning_into_a_failing_build(prd, tmp_path):
+    """End to end: a warning-severity diagnostic alone must stop the build."""
+
+    class DeadCodeAnalyzer:
+        def analyze(self, project_dir):
+            return [_warning("unused_element")]
+
+    app = build_graph(TemplateGenerator(), DeadCodeAnalyzer(), max_repairs=0, dry_run=True)
+    final = app.invoke(initial_state(prd.model_dump(mode="json"), str(tmp_path)))
+
+    assert final["diagnostics"], "a lone warning should have failed the build"
+    assert final["diagnostics"][0].code == "unused_element"
+    assert any("escalated as unwired/dead code" in line for line in final["log"])
+
+
+@pytest.mark.parametrize(
+    "path, snippet, name",
+    [
+        ("lib/ui/settings_screen.dart",
+         "\nString formatSubtitle(String raw) { return raw.trim(); }\n", "formatSubtitle"),
+        ("lib/ui/app.dart",
+         "\nclass OrphanedCard extends StatelessWidget {}\n", "OrphanedCard"),
+        ("lib/providers/observation_providers.dart",
+         "\nfinal ghostProvider = StateProvider<int>((ref) => 0);\n", "ghostProvider"),
+    ],
+)
+def test_public_unwired_declarations_are_caught(path, snippet, name):
+    """`dart analyze` reports unused_element for PRIVATE declarations only — it
+    cannot know an external package won't import a public one. A generated app
+    has no external importers, so that blind spot is ours to cover."""
+    prd = load_prd(PRD_PATH)
+    gen = TemplateGenerator()
+    ui = gen.build_ui(prd, "", [])
+    logic = gen.wire_logic(prd, "", ui, [])
+    files = {**ui, **logic}
+    files[path] = files[path] + snippet
+
+    found = [d for d in check_conformance(prd, files) if d.code == "unwired_declaration"]
+    assert [d for d in found if name in d.message], f"{name} was not flagged"
+
+
+def test_unwired_check_has_no_false_positives_on_generated_output():
+    """The check is worthless if it cries wolf on our own templates."""
+    for name in sorted(glob.glob("evals/prds/*.json")) + [PRD_PATH]:
+        if "invalid_" in name:
+            continue
+        prd = load_prd(name)
+        gen = TemplateGenerator()
+        ui = gen.build_ui(prd, "", [])
+        logic = gen.wire_logic(prd, "", ui, [])
+        found = [
+            d for d in check_conformance(prd, {**ui, **logic})
+            if d.code == "unwired_declaration"
+        ]
+        assert found == [], f"{name}: {[d.message for d in found]}"
+
+
+def test_class_methods_are_not_treated_as_top_level():
+    """Regression: a `\\s` inside a character class consumed indentation and made
+    every method look like a top-level declaration."""
+    body = "class A {\n  Map<String, dynamic> toMap() { return {}; }\n  void update() {}\n}\n"
+    assert _top_level_names(body) == {"A"}
+
+
+def test_lint_config_also_escalates_at_the_analyzer_level():
+    """Belt and braces: the policy holds even if the QA node is bypassed."""
+    options = TemplateGenerator().plan(load_prd(PRD_PATH)).analysis_options
+    for code in ("unused_element", "unused_field", "dead_code"):
+        assert f"{code}: error" in options
 
 
 # --------------------------------------------------------------------------- #

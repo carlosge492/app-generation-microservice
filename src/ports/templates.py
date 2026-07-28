@@ -134,6 +134,8 @@ analyzer:
     # QA subagent sees it rather than a human reviewer.
     unused_import: error
     unused_local_variable: error
+    unused_element: error
+    unused_field: error
     dead_code: error
 """
 

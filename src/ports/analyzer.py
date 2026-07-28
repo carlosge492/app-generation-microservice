@@ -39,6 +39,29 @@ class DartAnalyzer(Protocol):
     def analyze(self, project_dir: Path) -> list[Diagnostic]: ...
 
 
+# Warnings the QA subagent promotes to build-breaking errors.
+#
+# In a hand-written codebase an orphaned declaration is untidiness. In a
+# generated one it is evidence of a hallucination: the model decided it needed a
+# helper, wrote it, and never wired it to anything. The unreferenced code is the
+# visible half of the mistake — the missing call site is the half that matters,
+# and it is exactly the kind of silent incompleteness a buyer would discover at
+# runtime. Fail the build and make the agent finish the job.
+#
+# Escalated here rather than only in analysis_options.yaml so the policy holds
+# even when the analyzer config is missing, overridden, or written by a model.
+HALLUCINATION_WARNINGS = frozenset({
+    "unused_element",         # private declaration nothing references
+    "unused_field",           # field written but never read
+    "unused_local_variable",  # computed, then dropped
+    "dead_code",              # unreachable branch
+})
+
+
+def is_fatal(diagnostic: Diagnostic) -> bool:
+    return diagnostic.severity == "error" or diagnostic.code in HALLUCINATION_WARNINGS
+
+
 # --------------------------------------------------------------------------- #
 # Stub implementation
 # --------------------------------------------------------------------------- #

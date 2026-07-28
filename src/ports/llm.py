@@ -1,5 +1,22 @@
 """Claude-backed implementation of `CodeGenerator`.
 
+    ⚠️  STATUS: NEVER EXECUTED. Not one line of this module has run against the
+    live API — there were no credentials on the machine it was written on, and
+    Phase 2 (the validation run) was deferred. Treat it as a sketch, not as
+    working code.
+
+    Specifically unverified: whether `output_config.format` + streaming + the
+    `server-side-fallback` beta are accepted together; whether the structured
+    output parses; whether the model respects its path lane (violations are
+    silently dropped by `_bundle`, so a green build could still be hiding
+    discarded files); whether the refusal and max_tokens branches are reachable.
+
+    The offline `TemplateGenerator` is the supported path and is validated
+    end to end against the real Flutter toolchain. Before trusting this module,
+    run `evals/run.py --generator claude --analyzer dart` and compare.
+
+Design intent (as written, not as proven):
+
 Each subagent is a separate, single-shot structured-output call with its own
 cached system prompt. Progressive disclosure is enforced here: the GenUI agent is
 never shown Firebase/Riverpod guidance, and the Logic agent is never asked to
