@@ -15,6 +15,8 @@ from src.ports.analyzer import Diagnostic, FlutterAnalyzer, StubAnalyzer, is_fat
 from src.ports.conformance import _top_level_names, check_conformance
 from src.ports.generator import Plan
 from src.ports.ownership import owner_of
+from src.ports.runtime import _parse_runner_output
+from src.ports.smoke import build_smoke_tests
 from src.ports.templates import TemplateGenerator, dart_string
 from src.prd.schema import PRD, load_prd
 
@@ -329,6 +331,127 @@ def test_lint_config_also_escalates_at_the_analyzer_level():
     options = TemplateGenerator().plan(load_prd(PRD_PATH)).analysis_options
     for code in ("unused_element", "unused_field", "dead_code"):
         assert f"{code}: error" in options
+
+
+# --------------------------------------------------------------------------- #
+# Widget smoke tests
+# --------------------------------------------------------------------------- #
+
+
+def _generated(prd_path=PRD_PATH):
+    prd = load_prd(prd_path)
+    gen = TemplateGenerator()
+    ui = gen.build_ui(prd, "", [])
+    logic = gen.wire_logic(prd, "", ui, [])
+    return prd, {**ui, **logic}
+
+
+def test_smoke_test_generated_per_screen_but_not_for_app():
+    prd, files = _generated()
+    tests = build_smoke_tests(prd, files)
+
+    assert set(tests) == {
+        "test/observations_screen_smoke_test.dart",
+        "test/capture_screen_smoke_test.dart",
+        "test/settings_screen_smoke_test.dart",
+    }
+
+
+def test_smoke_test_only_imports_what_the_screen_uses():
+    """`unused_import` is escalated to an error and `flutter analyze` reads
+    test/, so a sloppy test file would fail the build it is meant to validate."""
+    prd, files = _generated()
+    tests = build_smoke_tests(prd, files)
+
+    # The settings screen touches no providers, so it must not import any.
+    settings = tests["test/settings_screen_smoke_test.dart"]
+    assert "providers/" not in settings
+    # The list screen does.
+    assert "providers/observation_providers.dart" in tests[
+        "test/observations_screen_smoke_test.dart"
+    ]
+
+
+def test_smoke_test_asserts_the_data_layer_resolves():
+    """takeException() alone is too weak: the screens catch provider errors with
+    `.when(error:)`, so a wholly broken data layer would still pass."""
+    prd, files = _generated()
+    body = build_smoke_tests(prd, files)["test/observations_screen_smoke_test.dart"]
+
+    assert "observationListProvider.overrideWith" in body
+    assert "container.read(observationListProvider.future), completes" in body
+
+
+def test_smoke_test_uses_the_matching_app_wrapper():
+    """A Cupertino screen pumped inside a MaterialApp (or vice versa) would
+    throw on MaterialLocalizations, which is the bug class this catches."""
+    _, material = _generated()
+    prd_m = load_prd(PRD_PATH)
+    assert "MaterialApp(home:" in build_smoke_tests(prd_m, material)[
+        "test/observations_screen_smoke_test.dart"
+    ]
+
+    prd_c, cupertino = _generated("evals/prds/cupertino.prd.json")
+    body = build_smoke_tests(prd_c, cupertino)["test/articles_screen_smoke_test.dart"]
+    assert "CupertinoApp(home:" in body
+    assert "MaterialApp" not in body
+
+
+def test_smoke_tests_are_discovered_not_predicted():
+    """Names come from scanning the output, so a differently-named generator
+    still gets valid tests. This is what keeps them usable for LLM output."""
+    prd = load_prd(PRD_PATH)
+    files = {
+        "lib/ui/weird_name.dart": "class TotallyDifferentScreen extends ConsumerWidget {}\n",
+        "lib/providers/p.dart":
+            "final oddProvider = StreamProvider<List<Thing>>((ref) => x);\n",
+    }
+    files["lib/ui/weird_name.dart"] += "  ref.watch(oddProvider);\n"
+
+    tests = build_smoke_tests(prd, files)
+    body = next(iter(tests.values()))
+    assert "TotallyDifferentScreen" in body
+    assert "oddProvider.overrideWith" in body
+    assert "Stream<List<Thing>>" in body
+
+
+# --------------------------------------------------------------------------- #
+# Test runner
+# --------------------------------------------------------------------------- #
+
+
+def test_runner_parses_failing_tests(tmp_path):
+    (tmp_path / "test").mkdir()
+    output = (
+        "00:01 +2 -1: Some tests failed.\n"
+        "\n"
+        "Failing tests:\n"
+        f"  {tmp_path.as_posix()}/test/home_screen_smoke_test.dart: HomeScreen builds\n"
+    )
+    found = _parse_runner_output(output, tmp_path)
+
+    assert len(found) == 1
+    assert found[0].code == "smoke_failure"
+    assert found[0].file == "test/home_screen_smoke_test.dart"
+    assert "HomeScreen builds" in found[0].message
+
+
+def test_runner_never_reports_green_on_unparseable_failure(tmp_path):
+    (tmp_path / "test").mkdir()
+    found = _parse_runner_output("everything exploded, no summary", tmp_path)
+    assert len(found) == 1 and found[0].code == "smoke_failure"
+
+
+def test_smoke_failure_routes_to_genui():
+    d = Diagnostic("error", "test/home_screen_smoke_test.dart", 0, "smoke_failure", "x")
+    assert owner_of(d) == "genui"
+
+
+def test_qa_node_ships_the_smoke_tests(prd, tmp_path):
+    final = run(prd, tmp_path)
+    assert set(final["test_files"]), "smoke tests should be part of the deliverable"
+    for rel in final["test_files"]:
+        assert (tmp_path / rel).exists(), f"{rel} was not written to disk"
 
 
 # --------------------------------------------------------------------------- #

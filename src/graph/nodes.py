@@ -21,6 +21,8 @@ from src.ports.analyzer import (
 from src.ports.conformance import check_conformance
 from src.ports.generator import CodeGenerator
 from src.ports.ownership import owner_of, route_for
+from src.ports.runtime import TestRunner
+from src.ports.smoke import build_smoke_tests
 from src.prd.schema import PRD
 
 Node = Callable[[BuildState], dict[str, Any]]
@@ -100,10 +102,15 @@ def make_logic_node(generator: CodeGenerator) -> Node:
     return logic
 
 
-def make_qa_node(analyzer: DartAnalyzer) -> Node:
+def make_qa_node(analyzer: DartAnalyzer, runner: TestRunner | None = None) -> Node:
     def qa(state: BuildState) -> dict[str, Any]:
         build_dir = Path(state["build_dir"])
         files = all_files(state)
+
+        # Smoke tests are derived from the generated sources, so they are built
+        # here rather than by a subagent, and they ship with the app.
+        smoke = build_smoke_tests(_prd(state), files)
+        files.update(smoke)
 
         # Materialise the project, then analyse it the way the real pipeline would.
         for rel, content in files.items():
@@ -124,6 +131,13 @@ def make_qa_node(analyzer: DartAnalyzer) -> Node:
         # the one the PRD asked for. Neither subsumes the other.
         diagnostics = diagnostics + check_conformance(_prd(state), files)
 
+        # Static analysis proves it compiles; the widget tests prove it runs.
+        if runner is not None:
+            try:
+                diagnostics = diagnostics + runner.run(build_dir)
+            except ToolchainUnavailable as exc:
+                return {"phase": "failed", "failure": str(exc), "log": [f"qa: {exc}"]}
+
         errors = [d for d in diagnostics if is_fatal(d)]
         escalated = sum(
             1 for d in errors
@@ -133,13 +147,15 @@ def make_qa_node(analyzer: DartAnalyzer) -> Node:
         # regardless of how many agents the router then involves.
         attempts = state.get("repair_attempts", 0) + (1 if errors else 0)
         note = (
-            f"qa: {len(files)} file(s) analysed, {len(errors)} error(s), "
+            f"qa: {len(files)} file(s) analysed ({len(smoke)} smoke test(s)), "
+            f"{len(errors)} error(s), "
             f"{len(diagnostics) - len(errors)} non-fatal"
         )
         if escalated:
             note += f" ({escalated} escalated as unwired/dead code)"
         return {
             "diagnostics": errors,
+            "test_files": smoke,
             "repair_attempts": attempts,
             "phase": "packaging" if not errors else "qa",
             "log": [note],

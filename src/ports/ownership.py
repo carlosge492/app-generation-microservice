@@ -33,6 +33,10 @@ _EXPLICIT: dict[str, Owner] = {
     "missing_screen": "genui",
     "unreachable_screen": "genui",
     "missing_form_field": "genui",
+    # A widget that throws on build is overwhelmingly a UI construction
+    # problem. A broken provider can also surface here; routing it to
+    # GenUI first still gives Logic a turn, since genui -> logic -> qa.
+    "smoke_failure": "genui",
     "missing_provider": "logic",
     "wrong_collection": "logic",
     # Planning-phase output is frozen once GenUI starts; nothing downstream can

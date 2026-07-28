@@ -32,6 +32,7 @@ class BuildState(TypedDict, total=False):
     provider_files: dict[str, str]
 
     # --- qa subagent output ---
+    test_files: dict[str, str]
     diagnostics: list[Diagnostic]
     repair_attempts: int
 

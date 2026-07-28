@@ -26,7 +26,8 @@ if __package__ in (None, ""):
 from src.graph.builder import build_graph  # noqa: E402
 from src.graph.state import initial_state  # noqa: E402
 from src.ports.analyzer import get_analyzer  # noqa: E402
-from src.ports.generator import get_generator  # noqa: E402
+from src.ports.generator import get_generator
+from src.ports.runtime import FlutterTestRunner  # noqa: E402
 from src.prd.schema import load_prd  # noqa: E402
 
 PRD_DIRS = [Path("evals/prds"), Path("examples")]
@@ -108,6 +109,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--generator", choices=["template", "claude"], default="template")
     parser.add_argument("--flutter-root", default=None)
     parser.add_argument("--max-repairs", type=int, default=3)
+    parser.add_argument("--run-tests", action="store_true",
+                        help="also run the generated widget smoke tests "
+                             "(requires the Flutter SDK)")
     parser.add_argument("--filter", default="", help="only run PRDs whose name contains this")
     args = parser.parse_args(argv)
 
@@ -120,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         get_generator(args.generator),
         get_analyzer(args.analyzer, args.flutter_root),
         max_repairs=args.max_repairs,
+        test_runner=FlutterTestRunner(args.flutter_root) if args.run_tests else None,
         dry_run=True,
     )
 
