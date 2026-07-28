@@ -92,7 +92,8 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Claude generator — request shape | fake transport, 18 tests | ✅ |
 | Harness works on non-template code | `--generator fixture` | ✅ full pipeline + APK path |
 | Claude generator (Opus 5) | full eval sweep | ✅ 11/11 |
-| APK packaging | `flutter build apk --debug` | ✅ 144 MB APK, correct applicationId |
+| APK packaging (template) | `flutter build apk --debug` | ✅ correct applicationId |
+| APK packaging (Opus output) | `flutter build apk --debug` | ✅ 145 MB, x402-gated |
 | Navigation / real Firestore I/O | — | ❌ needs an emulator |
 | Release signing / Play upload | — | ❌ debug keystore only |
 
