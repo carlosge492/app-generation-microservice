@@ -22,6 +22,7 @@ Do not guess how to run this project. Use these exact commands when testing or e
 | Start the orchestrator | `poetry run python src/supervisor.py` |
 | Run local Dart MCP server | `mcp_dart start --workspace ./generated_apps` |
 | Trigger QA static analysis | `flutter analyze` (run inside the build dir) |
+| Run the eval sweep | `poetry run python evals/run.py --analyzer dart --flutter-root "C:\flutter"` |
 | Run build pipeline | `fastlane android build_m2m_apk` |
 
 The Flutter SDK lives at `C:\flutter` (3.44.8 / Dart 3.12.2) and is deliberately

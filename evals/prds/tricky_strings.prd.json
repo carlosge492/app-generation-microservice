@@ -1,0 +1,29 @@
+{
+  "app_name": "Ana's Café",
+  "package_name": "com.example.anascafe",
+  "description": "Punctuation torture test: colons, apostrophes, \"quotes\", $dollars & 100% unicode — é ü ñ.",
+  "models": [
+    {
+      "name": "Order",
+      "collection": "orders",
+      "fields": [
+        { "name": "customerName", "label": "Customer's name", "type": "text" },
+        { "name": "total", "label": "Total ($)", "type": "number" }
+      ]
+    }
+  ],
+  "screens": [
+    {
+      "id": "orders",
+      "title": "Today's orders: all of them",
+      "kind": "list",
+      "model": "Order"
+    },
+    {
+      "id": "newOrder",
+      "title": "New order — it's $5, 100% off!",
+      "kind": "form",
+      "model": "Order"
+    }
+  ]
+}

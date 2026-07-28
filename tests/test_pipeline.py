@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 import yaml
@@ -12,7 +13,7 @@ from src.payments.x402 import PaymentNotVerified, is_verified
 from src.ports.analyzer import FlutterAnalyzer, StubAnalyzer
 from src.ports.generator import Plan
 from src.ports.ownership import owner_of
-from src.ports.templates import TemplateGenerator
+from src.ports.templates import TemplateGenerator, dart_string
 from src.prd.schema import PRD, load_prd
 
 PRD_PATH = "examples/todo_app.prd.json"
@@ -288,6 +289,47 @@ def test_pubspec_is_valid_yaml_despite_colons_in_description():
 
     assert parsed["description"] == "An app: it does things; it's \"quoted\" & 'awkward'"
     assert parsed["name"] == "tricky"
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("Ana's", "Ana\\'s"),
+        ("$5", "\\$5"),
+        ("back\\slash", "back\\\\slash"),
+        ("a\nb", "a\\nb"),
+        ("plain", "plain"),
+    ],
+)
+def test_dart_string_escaping(raw, expected):
+    assert dart_string(raw) == expected
+
+
+def test_tricky_prd_emits_parseable_dart_literals():
+    """Regression: an apostrophe in a screen title closed the Dart string early,
+    turning the rest of the line into code (59 analyzer errors)."""
+    prd = load_prd("evals/prds/tricky_strings.prd.json")
+    ui = TemplateGenerator().build_ui(prd, "", [])
+
+    for path, body in ui.items():
+        for literal in re.findall(r"'((?:[^'\\\n]|\\.)*)'", body):
+            # Every raw apostrophe and dollar inside a literal must be escaped.
+            assert "'" not in literal.replace("\\'", ""), f"{path}: {literal}"
+            assert "$" not in literal.replace("\\$", "").replace("$error", ""), (
+                f"{path}: unescaped interpolation in {literal}"
+            )
+
+
+@pytest.mark.xfail(reason="known gap: theme is read from the PRD but never applied", strict=True)
+def test_cupertino_theme_is_honoured():
+    """The analyzer cannot catch this — the code compiles, it is just wrong.
+
+    `theme: cupertino` is accepted by the schema and documented in DESIGN.md, but
+    the widget templates always emit MaterialApp.
+    """
+    prd = load_prd("evals/prds/cupertino.prd.json")
+    app_dart = TemplateGenerator().build_ui(prd, "", [])["lib/ui/app.dart"]
+    assert "CupertinoApp" in app_dart
 
 
 def test_plan_enables_the_linter():

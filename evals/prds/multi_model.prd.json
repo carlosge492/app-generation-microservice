@@ -1,0 +1,34 @@
+{
+  "app_name": "Warehouse",
+  "package_name": "com.example.warehouse",
+  "description": "Three independent models, each with its own provider module.",
+  "models": [
+    {
+      "name": "Item",
+      "collection": "items",
+      "fields": [
+        { "name": "sku", "label": "SKU", "type": "text" },
+        { "name": "onHand", "label": "On hand", "type": "number" }
+      ]
+    },
+    {
+      "name": "Supplier",
+      "collection": "suppliers",
+      "fields": [{ "name": "companyName", "label": "Company", "type": "text" }]
+    },
+    {
+      "name": "Shipment",
+      "collection": "shipments",
+      "fields": [
+        { "name": "reference", "label": "Reference", "type": "text" },
+        { "name": "delivered", "label": "Delivered", "type": "bool" }
+      ]
+    }
+  ],
+  "screens": [
+    { "id": "items", "title": "Items", "kind": "list", "model": "Item" },
+    { "id": "suppliers", "title": "Suppliers", "kind": "list", "model": "Supplier" },
+    { "id": "shipments", "title": "Shipments", "kind": "list", "model": "Shipment" },
+    { "id": "newItem", "title": "New item", "kind": "form", "model": "Item" }
+  ]
+}

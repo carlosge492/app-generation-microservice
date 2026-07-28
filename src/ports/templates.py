@@ -49,6 +49,24 @@ def yaml_scalar(value: str) -> str:
     return "'" + collapsed.replace("'", "''") + "'"
 
 
+def dart_string(value: str) -> str:
+    """Escape a PRD string for a single-quoted Dart literal.
+
+    Sibling of `yaml_scalar`, and the same class of bug one layer down: a screen
+    titled "Ana's Café" emits `Text('Ana's Café')`, where the apostrophe closes
+    the literal and everything after it is parsed as code. A `$` is worse — it
+    silently becomes Dart string interpolation rather than a syntax error.
+    Backslash must be escaped first or it double-escapes the others.
+    """
+    return (
+        value.replace("\\", "\\\\")
+        .replace("'", "\\'")
+        .replace("$", "\\$")
+        .replace("\r", "")
+        .replace("\n", "\\n")
+    )
+
+
 def dart_type(field_type: str) -> str:
     return {"text": "String", "number": "num", "bool": "bool", "date": "DateTime"}[field_type]
 
@@ -424,7 +442,7 @@ class TemplateGenerator:
         files["lib/ui/app.dart"] = APP_DART.safe_substitute(
             IMPORTS=imports,
             APP_CLASS=app_class,
-            TITLE=prd.app_name,
+            TITLE=dart_string(prd.app_name),
             INITIAL_ROUTE=f"/{snake(prd.screens[0].id)}",
             ROUTES=routes,
         )
@@ -453,20 +471,23 @@ class TemplateGenerator:
     def _render_screen(self, screen: Screen, model: DataModel | None) -> str:
         cls = screen_class(screen)
         if model is None:
-            return PLAIN_SCREEN.safe_substitute(CLASS=cls, TITLE=screen.title)
+            return PLAIN_SCREEN.safe_substitute(
+                CLASS=cls, TITLE=dart_string(screen.title)
+            )
 
         module = snake(model.name) + "_providers"
         if screen.kind == "form":
             fields = "\n".join(
                 "          TextFormField(\n"
-                f"            decoration: const InputDecoration(labelText: '{f.label}'),\n"
+                "            decoration: const InputDecoration("
+                f"labelText: '{dart_string(f.label)}'),\n"
                 f"            onChanged: (value) => controller.update('{f.name}', value),\n"
                 "          ),"
                 for f in (screen.fields or model.fields)
             )
             return FORM_SCREEN.safe_substitute(
                 CLASS=cls,
-                TITLE=screen.title,
+                TITLE=dart_string(screen.title),
                 PROVIDER_MODULE=module,
                 CONTROLLER_PROVIDER=controller_provider(model),
                 FIELDS=fields,
@@ -475,7 +496,7 @@ class TemplateGenerator:
         primary = model.fields[0].name if model.fields else "id"
         return LIST_SCREEN.safe_substitute(
             CLASS=cls,
-            TITLE=screen.title,
+            TITLE=dart_string(screen.title),
             PROVIDER_MODULE=module,
             LIST_PROVIDER=list_provider(model),
             CONTROLLER_PROVIDER=controller_provider(model),
@@ -541,7 +562,7 @@ class TemplateGenerator:
         return PROVIDERS.safe_substitute(
             CLASS=cls,
             VAR=var,
-            COLLECTION=model.collection,
+            COLLECTION=dart_string(model.collection),
             LIST_PROVIDER=list_provider(model),
             CONTROLLER_PROVIDER=controller_provider(model),
             CONTROLLER_CLASS=f"{cls}Controller",

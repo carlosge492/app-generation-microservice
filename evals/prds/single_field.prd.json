@@ -1,0 +1,15 @@
+{
+  "app_name": "One Field",
+  "package_name": "com.example.onefield",
+  "description": "Smallest possible model: exactly one field.",
+  "models": [
+    {
+      "name": "Note",
+      "collection": "notes",
+      "fields": [{ "name": "text", "label": "Text", "type": "text" }]
+    }
+  ],
+  "screens": [
+    { "id": "notes", "title": "Notes", "kind": "list", "model": "Note" }
+  ]
+}

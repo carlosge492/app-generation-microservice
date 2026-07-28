@@ -1,0 +1,21 @@
+{
+  "app_name": "Type Zoo",
+  "package_name": "com.example.typezoo",
+  "description": "Exercises every supported field type in one model.",
+  "models": [
+    {
+      "name": "Sample",
+      "collection": "samples",
+      "fields": [
+        { "name": "label", "label": "Label", "type": "text" },
+        { "name": "quantity", "label": "Quantity", "type": "number" },
+        { "name": "active", "label": "Active", "type": "bool" },
+        { "name": "capturedAt", "label": "Captured at", "type": "date" }
+      ]
+    }
+  ],
+  "screens": [
+    { "id": "samples", "title": "Samples", "kind": "list", "model": "Sample" },
+    { "id": "addSample", "title": "Add sample", "kind": "form", "model": "Sample" }
+  ]
+}

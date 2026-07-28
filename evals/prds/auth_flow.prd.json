@@ -1,0 +1,31 @@
+{
+  "app_name": "Gated",
+  "package_name": "com.example.gated",
+  "description": "Auth-first app: sign in, browse, sign out.",
+  "auth": true,
+  "models": [
+    {
+      "name": "Entry",
+      "collection": "entries",
+      "fields": [{ "name": "body", "label": "Body", "type": "text" }]
+    }
+  ],
+  "screens": [
+    {
+      "id": "signIn",
+      "title": "Sign in",
+      "kind": "auth",
+      "actions": [
+        { "name": "authenticate", "kind": "signIn" },
+        { "name": "goToFeed", "kind": "navigate", "target": "feed" }
+      ]
+    },
+    { "id": "feed", "title": "Feed", "kind": "list", "model": "Entry" },
+    {
+      "id": "account",
+      "title": "Account",
+      "kind": "settings",
+      "actions": [{ "name": "leave", "kind": "signOut" }]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "app_name": "Broken",
+  "package_name": "com.example.broken",
+  "models": [],
+  "screens": [
+    { "id": "ghosts", "title": "Ghosts", "kind": "list", "model": "Phantom" }
+  ]
+}

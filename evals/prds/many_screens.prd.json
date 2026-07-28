@@ -1,0 +1,42 @@
+{
+  "app_name": "Sprawl",
+  "package_name": "com.example.sprawl",
+  "description": "Eight screens with a navigation graph between them.",
+  "models": [
+    {
+      "name": "Task",
+      "collection": "tasks",
+      "fields": [
+        { "name": "title", "label": "Title", "type": "text" },
+        { "name": "done", "label": "Done", "type": "bool" }
+      ]
+    }
+  ],
+  "screens": [
+    {
+      "id": "inbox",
+      "title": "Inbox",
+      "kind": "list",
+      "model": "Task",
+      "actions": [{ "name": "openToday", "kind": "navigate", "target": "today" }]
+    },
+    {
+      "id": "today",
+      "title": "Today",
+      "kind": "list",
+      "model": "Task",
+      "actions": [{ "name": "openUpcoming", "kind": "navigate", "target": "upcoming" }]
+    },
+    { "id": "upcoming", "title": "Upcoming", "kind": "list", "model": "Task" },
+    { "id": "archive", "title": "Archive", "kind": "list", "model": "Task" },
+    { "id": "compose", "title": "Compose", "kind": "form", "model": "Task" },
+    { "id": "taskDetail", "title": "Task detail", "kind": "detail", "model": "Task" },
+    { "id": "profile", "title": "Profile", "kind": "settings" },
+    {
+      "id": "about",
+      "title": "About",
+      "kind": "settings",
+      "actions": [{ "name": "backToInbox", "kind": "navigate", "target": "inbox" }]
+    }
+  ]
+}

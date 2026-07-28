@@ -1,0 +1,7 @@
+{
+  "app_name": "Minimal",
+  "package_name": "com.example.minimal",
+  "screens": [
+    { "id": "home", "title": "Home", "kind": "settings" }
+  ]
+}

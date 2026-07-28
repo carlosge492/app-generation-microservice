@@ -1,0 +1,23 @@
+{
+  "app_name": "Kind Sampler",
+  "package_name": "com.example.kindsampler",
+  "description": "One screen of every supported kind.",
+  "auth": true,
+  "models": [
+    {
+      "name": "Record",
+      "collection": "records",
+      "fields": [
+        { "name": "name", "label": "Name", "type": "text" },
+        { "name": "score", "label": "Score", "type": "number" }
+      ]
+    }
+  ],
+  "screens": [
+    { "id": "browse", "title": "Browse", "kind": "list", "model": "Record" },
+    { "id": "create", "title": "Create", "kind": "form", "model": "Record" },
+    { "id": "inspect", "title": "Inspect", "kind": "detail", "model": "Record" },
+    { "id": "login", "title": "Log in", "kind": "auth" },
+    { "id": "prefs", "title": "Preferences", "kind": "settings" }
+  ]
+}
