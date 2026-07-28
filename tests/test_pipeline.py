@@ -297,6 +297,26 @@ def test_unwired_check_has_no_false_positives_on_generated_output():
         assert found == [], f"{name}: {[d.message for d in found]}"
 
 
+@pytest.mark.parametrize("name", ["toMap", "toJson", "fromJson", "copyWith", "fromSnapshot"])
+def test_serialization_boilerplate_is_never_flagged(name):
+    """Data-class contracts, not dead code: `toMap` exists so the model *can* be
+    persisted, whether or not this PRD has a screen that writes one. Reference
+    count measures the PRD's feature set, not whether the data layer is sound."""
+    prd = load_prd(PRD_PATH)
+    gen = TemplateGenerator()
+    ui = gen.build_ui(prd, "", [])
+    logic = gen.wire_logic(prd, "", ui, [])
+    # Declared at top level, referenced by nothing — the shape that would
+    # otherwise trip the check.
+    logic["lib/providers/observation_providers.dart"] += (
+        f"\nMap<String, dynamic> {name}(Object o) {{ return <String, dynamic>{{}}; }}\n"
+    )
+
+    found = [d for d in check_conformance(prd, {**ui, **logic})
+             if d.code == "unwired_declaration"]
+    assert found == [], f"{name} should be exempt, got {[d.message for d in found]}"
+
+
 def test_class_methods_are_not_treated_as_top_level():
     """Regression: a `\\s` inside a character class consumed indentation and made
     every method look like a top-level declaration."""

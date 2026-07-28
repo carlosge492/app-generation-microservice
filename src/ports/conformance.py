@@ -64,6 +64,25 @@ _VAR_LINE = re.compile(r"(?:final|const)\s+(?:[\w<>,?\[\]]+\s+)?([a-z]\w*)\s*=")
 # `main` is called by the Flutter engine, never from Dart source.
 _ENTRYPOINTS = {"main"}
 
+# Serialization and value-semantics boilerplate on a data class.
+#
+# These are architectural contracts, not dead code. `toMap` exists so the model
+# *can* be written to Firestore, whether or not this particular PRD happens to
+# include a form screen that writes one; `fromSnapshot` is the read half of the
+# same contract. Judging them by reference count measures the current PRD's
+# feature set, not whether the data layer is correctly formed.
+#
+# Currently belt-and-braces: the matcher only scans column 0, so class methods
+# never reach this filter. It is written down because the obvious extension of
+# this check is to methods, and that is precisely when omitting it would start
+# deleting the data layer.
+_MODEL_BOILERPLATE = {
+    "toMap", "fromMap", "toJson", "fromJson", "fromSnapshot",
+    "copyWith", "toString", "hashCode",
+}
+
+_EXEMPT = _ENTRYPOINTS | _MODEL_BOILERPLATE
+
 
 def _top_level_names(body: str) -> set[str]:
     """Names declared at column 0. A leading space means it is nested."""
@@ -97,7 +116,7 @@ def _check_unwired_declarations(files: dict[str, str]) -> list[Diagnostic]:
 
     for path, body in sorted(lib.items()):
         for name in sorted(_top_level_names(body)):
-            if name in _ENTRYPOINTS or name.startswith("_"):
+            if name in _EXEMPT or name.startswith("_"):
                 continue
             # The declaration itself is one occurrence; a wired declaration has
             # at least one more.
