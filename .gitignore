@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.env
+
+# Agent output — build artifacts, not source
+generated_apps/

@@ -1,0 +1,25 @@
+[project]
+name = "app-generation-microservice"
+version = "0.1.0"
+description = "M2M agentic build system: JSON PRD in, compiled Flutter app out."
+requires-python = ">=3.12,<4.0"
+dependencies = [
+    "langgraph (>=0.6,<1.0)",
+    "anthropic (>=0.69,<1.0)",
+    "pydantic (>=2.9,<3.0)",
+    "python-dotenv (>=1.0,<2.0)",
+]
+
+[tool.poetry]
+packages = [{ include = "src" }]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[build-system]
+requires = ["poetry-core>=2.0"]
+build-backend = "poetry.core.masonry.api"

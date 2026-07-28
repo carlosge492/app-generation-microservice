@@ -1,0 +1,45 @@
+{
+  "app_name": "Field Notes",
+  "package_name": "com.example.fieldnotes",
+  "description": "A small field-research capture app: log observations offline, sync to Firestore.",
+  "theme": "material",
+  "auth": true,
+  "x402_payment_verified": false,
+  "models": [
+    {
+      "name": "Observation",
+      "collection": "observations",
+      "fields": [
+        { "name": "title", "label": "Title", "type": "text" },
+        { "name": "notes", "label": "Notes", "type": "text" },
+        { "name": "count", "label": "Specimen count", "type": "number" },
+        { "name": "verified", "label": "Verified", "type": "bool" },
+        { "name": "recordedAt", "label": "Recorded at", "type": "date" }
+      ]
+    }
+  ],
+  "screens": [
+    {
+      "id": "observations",
+      "title": "Observations",
+      "kind": "list",
+      "model": "Observation",
+      "actions": [
+        { "name": "openCapture", "kind": "navigate", "target": "capture" }
+      ]
+    },
+    {
+      "id": "capture",
+      "title": "New observation",
+      "kind": "form",
+      "model": "Observation",
+      "actions": [{ "name": "saveObservation", "kind": "create", "target": "Observation" }]
+    },
+    {
+      "id": "settings",
+      "title": "Settings",
+      "kind": "settings",
+      "actions": [{ "name": "signOut", "kind": "signOut" }]
+    }
+  ]
+}
