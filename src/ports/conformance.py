@@ -248,21 +248,43 @@ def _check_theme(prd: PRD, ui: str) -> list[Diagnostic]:
 
 
 def _check_screens(prd: PRD, ui: str, files: dict[str, str]) -> list[Diagnostic]:
+    """Every PRD screen must exist as a widget and be wired into the app.
+
+    Reachability is judged by whether the widget class is referenced from
+    somewhere other than the file declaring it — not by looking for a route
+    string. A single-screen app reached via `home: const ArticlesScreen()` is
+    perfectly reachable, and so is one using `onGenerateRoute`, a router
+    package, or route-name constants. Demanding a literal `'/articles'` flagged
+    all of those as broken.
+    """
+    ui_files = {k: v for k, v in files.items() if k.startswith("lib/ui/")}
     out: list[Diagnostic] = []
+
     for screen in prd.screens:
-        # A widget class carrying the screen's name, however the file is named.
-        if not re.search(rf"\bclass\s+\w*{pascal(screen.id)}\w*\b", ui):
+        pattern = rf"\bclass\s+(\w*{pascal(screen.id)}\w*)\b"
+        declaring = next(
+            ((path, re.search(pattern, body).group(1))
+             for path, body in sorted(ui_files.items()) if re.search(pattern, body)),
+            None,
+        )
+        if declaring is None:
             out.append(Diagnostic(
                 "error", "lib/ui/", 0, "missing_screen",
                 f"PRD declares screen {screen.id!r} ({screen.title!r}) but no "
                 f"matching widget class was generated",
             ))
             continue
-        if not _route_present(ui, screen.id):
+
+        path, cls = declaring
+        referenced_elsewhere = any(
+            other != path and re.search(rf"\b{re.escape(cls)}\b", body)
+            for other, body in ui_files.items()
+        )
+        if not referenced_elsewhere:
             out.append(Diagnostic(
                 "error", "lib/ui/app.dart", 0, "unreachable_screen",
-                f"screen {screen.id!r} exists but is not registered as a route, "
-                f"so nothing can navigate to it",
+                f"screen {screen.id!r} is declared as {cls!r} in {path} but nothing "
+                f"else references it, so the app can never show it",
             ))
     return out
 
@@ -303,7 +325,19 @@ def _check_form_fields(prd: PRD, files: dict[str, str]) -> list[Diagnostic]:
         # Search the whole UI: the screen may legitimately be split across files.
         body = _ui_blob(files)
         for field in expected:
-            if not re.search(rf"['\"]{re.escape(field.name)}['\"]", body):
+            # A field counts as captured if its name appears as part of an
+            # identifier, or its label appears as a string. Requiring the
+            # literal `'name'` assumed TemplateGenerator's
+            # `controller.update('name', value)` idiom; an ordinary Flutter form
+            # uses `TextEditingController _nameController` and
+            # `labelText: 'Name'`, and never quotes the field name at all.
+            by_identifier = re.search(
+                rf"\b_*{re.escape(field.name)}\w*\b", body, re.IGNORECASE
+            )
+            by_label = (
+                f"'{field.label}'" in body or f'"{field.label}"' in body
+            )
+            if not (by_identifier or by_label):
                 out.append(Diagnostic(
                     "error", "lib/ui/", 0, "missing_form_field",
                     f"form screen {screen.id!r} must capture field "

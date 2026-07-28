@@ -187,9 +187,10 @@ def _mutate(ui, logic, *, drop_ui=None, drop_logic=None, replace=None):
     if drop_logic:
         logic = {k: v for k, v in logic.items() if drop_logic not in k}
     if replace:
-        path, old, new = replace
+        path, pairs = replace
         target = ui if path in ui else logic
-        target[path] = target[path].replace(old, new)
+        for old, new in pairs:
+            target[path] = target[path].replace(old, new)
     return {**ui, **logic}
 
 
@@ -201,18 +202,25 @@ def _mutate(ui, logic, *, drop_ui=None, drop_logic=None, replace=None):
         (
             "renamed collection",
             {"replace": ("lib/providers/observations_repository.dart",
-                         "'observations'", "'obs_v2'")},
+                         [("'observations'", "'obs_v2'")])},
             "wrong_collection", "logic",
         ),
         (
+            # Must remove every trace of the field, not just its binding. The
+            # check now accepts an identifier (`_verifiedController`) or the
+            # label, because an ordinary Flutter form never quotes the field
+            # name — so a form still displaying "Verified" is, correctly, not
+            # reported as having dropped it.
             "dropped form field",
-            {"replace": ("lib/ui/capture_page.dart", "'verified'", "'ignored'")},
+            {"replace": ("lib/ui/capture_page.dart",
+                         [("'verified'", "'archived'"), ("'Verified'", "'Archived'")])},
             "missing_form_field", "genui",
         ),
         (
             "unwired helper",
-            {"replace": ("lib/ui/settings_page.dart", "class SettingsView",
-                         "String formatBadge(int n) { return ''; }\n\nclass SettingsView")},
+            {"replace": ("lib/ui/settings_page.dart",
+                         [("class SettingsView",
+                           "String formatBadge(int n) { return ''; }\n\nclass SettingsView")])},
             "unwired_declaration", "genui",
         ),
     ],

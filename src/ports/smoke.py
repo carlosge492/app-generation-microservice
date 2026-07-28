@@ -64,6 +64,20 @@ def _package_name(prd: PRD, files: dict[str, str]) -> str:
     return match.group(1) if match else snake(prd.app_name)
 
 
+def _needs_arguments(body: str, cls: str) -> bool:
+    """Does constructing `cls` require passing anything in?"""
+    match = re.search(rf"(?:const\s+)?{re.escape(cls)}\s*\(([^)]*)\)", body)
+    if match is None:
+        return False
+    params = match.group(1)
+    if "required" in params:
+        return True
+    # Anything left once the optional named block `{...}` is removed is a
+    # required positional parameter.
+    positional = re.sub(r"\{[^}]*\}", "", params).strip().strip(",").strip()
+    return bool(positional)
+
+
 def _discover_async_providers(files: dict[str, str]) -> dict[str, tuple[str, str, str]]:
     """provider name -> (kind, element type, declaring file)."""
     found: dict[str, tuple[str, str, str]] = {}
@@ -90,6 +104,15 @@ def build_smoke_tests(prd: PRD, files: dict[str, str]) -> dict[str, str]:
         if not classes:
             continue
         widget = classes[0]
+
+        # Only widgets that can stand alone. A well-factored generator extracts
+        # reusable components — `ArticleTile({required this.article})`,
+        # `ErrorView({required this.message})` — and pumping those with no
+        # arguments produces `missing_required_argument` against code that is
+        # perfectly correct. A screen is something the app can show by itself;
+        # if it needs data passed in, it is a component and not ours to smoke.
+        if _needs_arguments(body, widget):
+            continue
 
         # Only the providers this screen touches, so no import is unused.
         watched = [n for n in dict.fromkeys(_PROVIDER_REF.findall(body)) if n in streams]
