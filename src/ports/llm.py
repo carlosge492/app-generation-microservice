@@ -140,6 +140,16 @@ Hard rules:
 - Declare the root App widget and `main()` exactly once, in lib/main.dart.
 - Riverpod only. Declare every provider referenced by the UI you are shown,
   spelled exactly as the UI spells it.
+- Declare NO provider the UI does not reference. A derived "convenience"
+  provider that no screen watches is dead code and fails the build, however
+  reasonable it looks — if a screen needs a count, let that screen derive it.
+- Inside a Notifier/AsyncNotifier/StateNotifier subclass, never name a method
+  after one the Riverpod base class already declares: `update`, `build`,
+  `state`, `ref`, `future`, `stream`, `mounted`, `listenSelf`, `onDispose`.
+  `update` is the trap — the base class signature is
+  `update(FutureOr<State> Function(State), {onError})`, so a domain method
+  `update(String id, {...})` is an invalid override and will not compile. Use a
+  domain-specific name: `updateRecord`, `saveDraft`, `renameItem`.
 - Firebase access goes through cloud_firestore inside providers/controllers.
 - lib/main.dart is the composition root: ensureInitialized, Firebase.initializeApp,
   then runApp inside a ProviderScope.

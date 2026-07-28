@@ -155,6 +155,22 @@ def test_progressive_disclosure_between_subagents(prd):
     assert "Never declare a `Widget build(...)` method" in logic_system
 
 
+def test_logic_prompt_warns_about_the_two_defects_opus_actually_made(prd):
+    """Both survived a full Opus sweep, so the guidance is worth pinning.
+
+    `update` collided with AsyncNotifierBase.update (invalid_override, caught by
+    the compiler); a derived `articleCountProvider` was declared and never
+    watched by any screen.
+    """
+    gen, client = _gen(FakeMessage({"files": []}))
+    gen.wire_logic(prd, "# design", {}, [])
+    system = client.calls[0]["kwargs"]["system"][0]["text"]
+
+    assert "invalid override" in system
+    assert "updateRecord" in system, "should offer a domain-specific alternative"
+    assert "Declare NO provider the UI does not reference" in system
+
+
 def test_repair_pass_includes_the_diagnostics(prd):
     from src.ports.analyzer import Diagnostic
 

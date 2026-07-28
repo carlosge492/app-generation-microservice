@@ -73,8 +73,8 @@ it has.
 - **`fixture`** — a test double emitting correct Flutter that shares none of
   `TemplateGenerator`'s naming conventions. Proves the grading harness is not
   merely grading its own output. See `evals/fixture_generator.py`.
-- **`claude`** — real Claude calls with structured outputs.
-  **Never executed.** See the warning at the top of `src/ports/llm.py`.
+- **`claude`** — real Claude calls with structured outputs. Validated on
+  Opus 5 at 11/11 across the eval sweep.
 
 ## What is actually verified
 
@@ -89,14 +89,14 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Screens actually build at runtime | generated widget smoke tests | ✅ |
 | Repair loop recovers honestly | fault injection | ✅ |
 | x402 gate | unit tests | ✅ |
-| Claude generator — request shape | fake transport, 17 tests | ✅ |
+| Claude generator — request shape | fake transport, 18 tests | ✅ |
 | Harness works on non-template code | `--generator fixture` | ✅ full pipeline + APK path |
-| **Claude generator — live API** | — | ❌ never run |
+| Claude generator (Opus 5) | full eval sweep | ✅ 11/11 |
 | APK packaging | `flutter build apk --debug` | ✅ 144 MB APK, correct applicationId |
 | Navigation / real Firestore I/O | — | ❌ needs an emulator |
 | Release signing / Play upload | — | ❌ debug keystore only |
 
-109 unit tests; eval sweep 11/11 against real analysis and widget tests;
+117 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout
