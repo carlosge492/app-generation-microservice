@@ -58,8 +58,25 @@ HALLUCINATION_WARNINGS = frozenset({
 })
 
 
+# Warnings that mean the analysis itself is not trustworthy.
+#
+# `include_file_not_found` fires when analysis_options.yaml includes a lint
+# package the pubspec never declared. The analyser then runs with default rules
+# only, so every guarantee built on the lint set — unused code, dead code — is
+# silently void while the build still reports green. A check that has quietly
+# stopped running is worse than one that never existed, so this is fatal.
+ANALYSIS_INTEGRITY_WARNINGS = frozenset({
+    "include_file_not_found",
+    "analysis_option_unsupported_option",
+})
+
+
 def is_fatal(diagnostic: Diagnostic) -> bool:
-    return diagnostic.severity == "error" or diagnostic.code in HALLUCINATION_WARNINGS
+    return (
+        diagnostic.severity == "error"
+        or diagnostic.code in HALLUCINATION_WARNINGS
+        or diagnostic.code in ANALYSIS_INTEGRITY_WARNINGS
+    )
 
 
 # --------------------------------------------------------------------------- #

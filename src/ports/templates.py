@@ -49,6 +49,30 @@ def yaml_scalar(value: str) -> str:
     return "'" + collapsed.replace("'", "''") + "'"
 
 
+def ensure_lint_dependency(pubspec: str, version: str = "^4.0.0") -> str:
+    """Guarantee pubspec declares the lint package our analysis_options needs.
+
+    We inject analysis_options.yaml ourselves, so depending on a generator to
+    remember the matching dev_dependency makes our own lint guarantees hostage
+    to someone else's memory. The first live model run forgot it, the include
+    silently failed, and every lint-based check stopped applying.
+    """
+    if "flutter_lints" in pubspec:
+        return pubspec
+
+    block = f"  flutter_lints: {version}"
+    lines = pubspec.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() == "dev_dependencies:":
+            lines.insert(i + 1, block)
+            break
+    else:
+        # No dev_dependencies section at all: append one as a new top-level key.
+        lines += ["", "dev_dependencies:", block]
+
+    return "\n".join(lines) + "\n"
+
+
 def dart_string(value: str) -> str:
     """Escape a PRD string for a single-quoted Dart literal.
 

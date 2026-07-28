@@ -37,6 +37,11 @@ _EXPLICIT: dict[str, Owner] = {
     # problem. A broken provider can also surface here; routing it to
     # GenUI first still gives Logic a turn, since genui -> logic -> qa.
     "smoke_failure": "genui",
+    # GenUI put the composition root in its own lane; it must drop it.
+    "misplaced_entrypoint": "genui",
+    # Either agent may have written the second copy; GenUI goes first and the
+    # graph gives Logic a turn immediately after.
+    "duplicate_declaration": "genui",
     "missing_provider": "logic",
     "wrong_collection": "logic",
     # Planning-phase output is frozen once GenUI starts; nothing downstream can
@@ -44,6 +49,7 @@ _EXPLICIT: dict[str, Owner] = {
     "missing_pubspec": "fatal",
     "incomplete_pubspec": "fatal",
     "unparseable_pubspec": "fatal",
+    "lints_not_installed": "fatal",
 }
 
 

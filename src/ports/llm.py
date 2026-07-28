@@ -43,6 +43,11 @@ MAX_TOKENS = 64_000
 # enabled — `_call` downgrades once on a 400 rather than failing the build.
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
+# Request features we prefer but can live without. If the server rejects one
+# by name, it is dropped and the call retried. Order matters only for the
+# retry budget in `_call`.
+OPTIONAL_FEATURES = ("effort", "fallbacks")
+
 
 class GenerationRefused(RuntimeError):
     """The model declined the request (stop_reason == 'refusal')."""
@@ -144,11 +149,18 @@ class AnthropicGenerator:
         # `client` exists so the request shape can be exercised without
         # credentials; anthropic.Anthropic() raises at construction without them.
         self._client = client if client is not None else anthropic.Anthropic()
-        self._fallbacks_supported = True
+        # Populated at runtime from the server's own 400s.
+        self._unsupported: set[str] = set()
 
     # -- transport ---------------------------------------------------------- #
 
-    def _call(self, system: str, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+    def _build_kwargs(self, system: str, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+        output_config: dict[str, Any] = {
+            "format": {"type": "json_schema", "schema": schema},
+        }
+        if "effort" not in self._unsupported:
+            output_config["effort"] = self.effort
+
         kwargs: dict[str, Any] = dict(
             model=self.model,
             max_tokens=MAX_TOKENS,
@@ -158,25 +170,42 @@ class AnthropicGenerator:
                 "cache_control": {"type": "ephemeral"},
             }],
             messages=[{"role": "user", "content": prompt}],
-            output_config={
-                "effort": self.effort,
-                "format": {"type": "json_schema", "schema": schema},
-            },
+            output_config=output_config,
         )
-        if self._fallbacks_supported:
+        if "fallbacks" not in self._unsupported:
             kwargs["betas"] = [FALLBACK_BETA]
             kwargs["fallbacks"] = "default"
+        return kwargs
 
-        try:
-            message = self._stream(kwargs)
-        except anthropic.BadRequestError as exc:
-            if not self._fallbacks_supported or "fallback" not in str(exc).lower():
-                raise
-            # Beta not enabled for this org — proceed without refusal fallback.
-            self._fallbacks_supported = False
-            kwargs.pop("betas", None)
-            kwargs.pop("fallbacks", None)
-            message = self._stream(kwargs)
+    @staticmethod
+    def _rejected_feature(error: str) -> str | None:
+        """Which optional request feature did the server refuse, if any."""
+        lowered = error.lower()
+        for feature in OPTIONAL_FEATURES:
+            if feature in lowered:
+                return feature
+        return None
+
+    def _call(self, system: str, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+        # `effort` and the refusal-fallback beta are quality features, not
+        # requirements: `effort` is rejected outright by models that lack it
+        # (Haiku 4.5 returns "This model does not support the effort parameter")
+        # and the beta is not enabled for every org. Losing a whole build to
+        # either would be absurd, so drop whichever the server names and retry.
+        # Each is remembered, so the probe costs one rejected request per
+        # generator, not one per call.
+        for _ in range(len(OPTIONAL_FEATURES) + 1):
+            kwargs = self._build_kwargs(system, prompt, schema)
+            try:
+                message = self._stream(kwargs)
+                break
+            except anthropic.BadRequestError as exc:
+                feature = self._rejected_feature(str(exc))
+                if feature is None or feature in self._unsupported:
+                    raise  # a real problem, not a capability mismatch
+                self._unsupported.add(feature)
+        else:  # pragma: no cover - exhausted every downgrade
+            raise GenerationMalformed("could not construct an acceptable request")
 
         if message.stop_reason == "refusal":
             detail = getattr(message, "stop_details", None)

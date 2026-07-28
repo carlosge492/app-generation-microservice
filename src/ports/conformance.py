@@ -49,6 +49,74 @@ def check_conformance(prd: PRD, files: dict[str, str]) -> list[Diagnostic]:
     out += _check_models(prd, logic)
     out += _check_form_fields(prd, files)
     out += _check_unwired_declarations(files)
+    out += _check_lint_package_installed(files)
+    out += _check_single_entrypoint(files)
+    out += _check_duplicate_declarations(files)
+    return out
+
+
+def _check_lint_package_installed(files: dict[str, str]) -> list[Diagnostic]:
+    """analysis_options.yaml is inert unless the pubspec installs the lint package.
+
+    Found on the first live model run: the generated pubspec omitted
+    flutter_lints, so the include failed, the analyser fell back to default
+    rules, and every lint-based guarantee quietly stopped applying while the
+    build still went green.
+    """
+    options = files.get("analysis_options.yaml", "")
+    pubspec = files.get("pubspec.yaml", "")
+    if "flutter_lints" not in options or "flutter_lints" in pubspec:
+        return []
+    return [Diagnostic(
+        "error", "pubspec.yaml", 0, "lints_not_installed",
+        "analysis_options.yaml includes package:flutter_lints but pubspec.yaml "
+        "never declares it, so every lint rule is silently disabled",
+    )]
+
+
+def _check_single_entrypoint(files: dict[str, str]) -> list[Diagnostic]:
+    """`main()` belongs in lib/main.dart and nowhere else.
+
+    A second `main()` under lib/ui/ is a lane violation our path-based check
+    cannot see — the file is in GenUI's lane, but bootstrapping the app is
+    Logic's job. Dart compiles it happily; the app just has two shells.
+    """
+    out: list[Diagnostic] = []
+    for path, body in sorted(files.items()):
+        if not path.startswith("lib/") or path == "lib/main.dart":
+            continue
+        if re.search(r"^(?:Future<void>\s+|void\s+)main\s*\(", body, re.M):
+            out.append(Diagnostic(
+                "error", path, 0, "misplaced_entrypoint",
+                "main() is declared here as well as in lib/main.dart; the "
+                "composition root belongs solely to lib/main.dart",
+            ))
+    return out
+
+
+def _check_duplicate_declarations(files: dict[str, str]) -> list[Diagnostic]:
+    """The same top-level name declared in two files.
+
+    Two subagents each writing their own `MinimalApp` is not a compile error —
+    they are separate libraries — but the app ends up with two divergent copies
+    of its own shell, and only one of them is reachable.
+    """
+    seen: dict[str, str] = {}
+    out: list[Diagnostic] = []
+    for path, body in sorted(files.items()):
+        if not path.startswith("lib/"):
+            continue
+        for name in sorted(_top_level_names(body)):
+            if name in _EXEMPT:
+                continue
+            if name in seen:
+                out.append(Diagnostic(
+                    "error", path, 0, "duplicate_declaration",
+                    f"{name!r} is also declared in {seen[name]}; two copies of the "
+                    f"same declaration means one of them is dead",
+                ))
+            else:
+                seen[name] = path
     return out
 
 

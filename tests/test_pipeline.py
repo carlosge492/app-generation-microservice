@@ -206,7 +206,7 @@ def test_unfixable_pubspec_fails_without_burning_the_budget(prd, tmp_path):
     final = app.invoke(initial_state(prd.model_dump(mode="json"), str(tmp_path)))
 
     assert final["diagnostics"]
-    assert {d.code for d in final["diagnostics"]} == {"unparseable_pubspec"}
+    assert "unparseable_pubspec" in {d.code for d in final["diagnostics"]}
     assert final["repair_attempts"] == 1, "should fail fast, not loop"
 
 
