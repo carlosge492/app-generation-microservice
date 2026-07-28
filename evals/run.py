@@ -106,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(prog="evals", description=__doc__)
     parser.add_argument("--analyzer", choices=["stub", "dart"], default="stub")
-    parser.add_argument("--generator", choices=["template", "claude"], default="template")
+    parser.add_argument("--generator", choices=["template", "fixture", "claude"], default="template")
     parser.add_argument("--flutter-root", default=None)
     parser.add_argument("--max-repairs", type=int, default=3)
     parser.add_argument("--run-tests", action="store_true",

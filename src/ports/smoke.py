@@ -31,8 +31,17 @@ _WIDGET_CLASS = re.compile(
     re.M,
 )
 # `final observationListProvider = StreamProvider<List<Observation>>((ref) {`
-_STREAM_PROVIDER = re.compile(
-    r"^final\s+(\w+)\s*=\s*StreamProvider<\s*List<\s*(\w+)\s*>\s*>", re.M
+# and the qualified forms a generator may equally well pick:
+#   StreamProvider.autoDispose<List<T>>   FutureProvider<List<T>>
+#
+# The qualifier chain is not cosmetic. An unmatched declaration means no
+# override is emitted, the screen reaches real Firestore, and the generated
+# `.when(error: ...)` handler renders an error widget instead of throwing — so
+# the smoke test passes while asserting nothing. A test that cannot fail is
+# worse than no test, because it reports as coverage.
+_ASYNC_PROVIDER = re.compile(
+    r"^final\s+(\w+)\s*=\s*(Stream|Future)Provider(?:\.\w+)*\s*<\s*List<\s*(\w+)\s*>\s*>",
+    re.M,
 )
 _PROVIDER_REF = re.compile(r"\bref\.(?:watch|read)\(\s*([a-zA-Z_]\w*)\s*[.)]")
 
@@ -43,14 +52,14 @@ def _package_name(prd: PRD) -> str:
     return snake(prd.app_name)
 
 
-def _discover_stream_providers(files: dict[str, str]) -> dict[str, tuple[str, str]]:
-    """provider name -> (element type, declaring file)."""
-    found: dict[str, tuple[str, str]] = {}
+def _discover_async_providers(files: dict[str, str]) -> dict[str, tuple[str, str, str]]:
+    """provider name -> (kind, element type, declaring file)."""
+    found: dict[str, tuple[str, str, str]] = {}
     for path, body in files.items():
         if not path.startswith("lib/providers/"):
             continue
-        for name, element in _STREAM_PROVIDER.findall(body):
-            found[name] = (element, path)
+        for name, kind, element in _ASYNC_PROVIDER.findall(body):
+            found[name] = (kind, element, path)
     return found
 
 
@@ -59,7 +68,7 @@ def build_smoke_tests(prd: PRD, files: dict[str, str]) -> dict[str, str]:
     pkg = _package_name(prd)
     framework = "cupertino" if prd.theme == "cupertino" else "material"
     app_widget = "CupertinoApp" if prd.theme == "cupertino" else "MaterialApp"
-    streams = _discover_stream_providers(files)
+    streams = _discover_async_providers(files)
 
     tests: dict[str, str] = {}
     for path, body in sorted(files.items()):
@@ -72,7 +81,7 @@ def build_smoke_tests(prd: PRD, files: dict[str, str]) -> dict[str, str]:
 
         # Only the providers this screen touches, so no import is unused.
         watched = [n for n in dict.fromkeys(_PROVIDER_REF.findall(body)) if n in streams]
-        provider_files = sorted({streams[n][1] for n in watched})
+        provider_files = sorted({streams[n][2] for n in watched})
 
         imports = [
             f"import 'package:flutter/{framework}.dart';",
@@ -85,14 +94,15 @@ def build_smoke_tests(prd: PRD, files: dict[str, str]) -> dict[str, str]:
 
         if watched:
             overrides = "\n".join(
-                f"      {name}.overrideWith(\n"
-                f"        (ref) => Stream<List<{streams[name][0]}>>.value("
-                f"<{streams[name][0]}>[]),\n"
-                f"      ),"
+                # [0] is the kind (Stream/Future), [1] the element type.
+                f"        {name}.overrideWith(\n"
+                f"          (ref) => {streams[name][0]}<List<{streams[name][1]}>>"
+                f".value(<{streams[name][1]}>[]),\n"
+                f"        ),"
                 for name in watched
             )
         else:
-            overrides = "      // no data providers on this screen"
+            overrides = "        // no data providers on this screen"
 
         # Asserting only `takeException() == null` is too weak: the generated
         # screens handle provider failures with `.when(error: ...)`, which

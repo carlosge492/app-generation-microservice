@@ -36,7 +36,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="supervisor", description=__doc__)
     parser.add_argument("prd", nargs="?", default="examples/todo_app.prd.json",
                         help="path to the JSON PRD")
-    parser.add_argument("--generator", choices=["template", "claude"], default="template",
+    parser.add_argument("--generator", choices=["template", "fixture", "claude"], default="template",
                         help="template = offline; claude = real model calls")
     parser.add_argument("--analyzer", choices=["stub", "dart"], default="stub",
                         help="stub = no SDK needed; dart = real `dart analyze`")

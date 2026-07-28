@@ -60,8 +60,20 @@ def get_generator(kind: str, **kwargs) -> CodeGenerator:
         from src.ports.templates import TemplateGenerator
 
         return TemplateGenerator(**kwargs)
+    if kind == "fixture":
+        # Test double: model-style code that agrees with no TemplateGenerator
+        # convention. Exists to prove the grading harness is not just grading
+        # its own output. See evals/fixture_generator.py.
+        import sys
+        from pathlib import Path as _P
+        sys.path.insert(0, str(_P(__file__).resolve().parents[2] / "evals"))
+        from fixture_generator import FixtureGenerator
+
+        return FixtureGenerator(**kwargs)
     if kind == "claude":
         from src.ports.llm import AnthropicGenerator
 
         return AnthropicGenerator(**kwargs)
-    raise ValueError(f"unknown generator {kind!r}; expected 'template' or 'claude'")
+    raise ValueError(
+        f"unknown generator {kind!r}; expected 'template', 'fixture' or 'claude'"
+    )
