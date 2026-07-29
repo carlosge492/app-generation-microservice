@@ -29,10 +29,12 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from src.graph.builder import build_graph
 from src.graph.state import initial_state
+from src.payments.eip3009 import TokenConfig
 from src.payments.x402 import (
     PAYMENT_HEADER,
     DevPaymentVerifier,
     PaymentVerifier,
+    X402Verifier,
     challenge,
 )
 from src.ports.analyzer import get_analyzer
@@ -54,6 +56,58 @@ def _settings() -> dict[str, Any]:
     }
 
 
+class RefusingVerifier:
+    """Used when nothing is configured. Refuses everything.
+
+    A service that cannot verify payment must not accept it. Defaulting to the
+    dev shared-secret here would mean a deployment that forgot to configure
+    x402 quietly sells builds to anyone who guesses a string.
+    """
+
+    last_error = "no payment method configured on this deployment"
+
+    def settle(self, header_value: str | None) -> bool:
+        return False
+
+
+def _token_from_env() -> TokenConfig | None:
+    contract = os.getenv("X402_TOKEN_CONTRACT")
+    chain_id = os.getenv("X402_CHAIN_ID")
+    if not contract or not chain_id:
+        return None
+    return TokenConfig(
+        chain_id=int(chain_id),
+        verifying_contract=contract,
+        domain_name=os.getenv("X402_DOMAIN_NAME", "USDC"),
+        domain_version=os.getenv("X402_DOMAIN_VERSION", "2"),
+        network=os.getenv("X402_NETWORK", "base-sepolia"),
+    )
+
+
+def _verifier_from_env() -> tuple[PaymentVerifier, str, TokenConfig | None]:
+    """Pick a verifier, and say plainly which one, for /healthz.
+
+    Order is deliberate: real x402 wins, the dev stand-in is only reachable when
+    explicitly configured and no real token is, and the fallback refuses.
+    """
+    token = _token_from_env()
+    pay_to = os.getenv("X402_PAY_TO")
+    if token is not None and pay_to:
+        return (
+            X402Verifier(
+                token=token,
+                pay_to=pay_to,
+                min_value=int(os.getenv("X402_PRICE_ATOMIC", "500000")),
+                clock_skew=int(os.getenv("X402_CLOCK_SKEW", "0")),
+            ),
+            "x402-eip3009",
+            token,
+        )
+    if os.getenv("X402_SHARED_SECRET"):
+        return DevPaymentVerifier(os.getenv("X402_SHARED_SECRET")), "dev-shared-secret", None
+    return RefusingVerifier(), "none", None
+
+
 def create_app(
     verifier: PaymentVerifier | None = None,
     store: JobStore | None = None,
@@ -63,7 +117,12 @@ def create_app(
         summary="POST a Product Requirements Document, receive a compiled Flutter APK.",
         version="0.1.0",
     )
-    app.state.verifier = verifier or DevPaymentVerifier(os.getenv("X402_SHARED_SECRET"))
+    chosen, mode, token = _verifier_from_env()
+    app.state.verifier = verifier if verifier is not None else chosen
+    app.state.payment_mode = "injected" if verifier is not None else mode
+    app.state.token = token
+    app.state.pay_to = os.getenv("X402_PAY_TO")
+    app.state.price_atomic = int(os.getenv("X402_PRICE_ATOMIC", "500000"))
     app.state.store = store or JobStore()
 
     @app.get("/healthz")
@@ -75,7 +134,16 @@ def create_app(
             "analyzer": settings["analyzer"],
             # Surfaced because a deployment with no secret refuses every
             # payment, and that should be diagnosable without reading logs.
-            "payment_configured": bool(os.getenv("X402_SHARED_SECRET")),
+            "payment_configured": app.state.payment_mode not in {"none"},
+            "payment_mode": app.state.payment_mode,
+            # Verification proves a signature; settlement proves the money
+            # moved. A deployment accepting signed-but-unsettled promises
+            # should be able to discover that without reading the source.
+            "settlement": (
+                "on-chain" if os.getenv("X402_FACILITATOR_URL")
+                else "verification-only"
+            ),
+            "network": app.state.token.network if app.state.token else None,
         }
 
     @app.post("/builds", status_code=202)
@@ -91,9 +159,17 @@ def create_app(
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-        paid = request.app.state.verifier.settle(x_payment)
-        if not paid:
-            return JSONResponse(status_code=402, content=challenge())
+        verifier = request.app.state.verifier
+        if not verifier.settle(x_payment):
+            return JSONResponse(
+                status_code=402,
+                content=challenge(
+                    token=request.app.state.token,
+                    pay_to=request.app.state.pay_to,
+                    max_amount_required=request.app.state.price_atomic,
+                    error=getattr(verifier, "last_error", None),
+                ),
+            )
 
         store: JobStore = request.app.state.store
         job = store.create(prd.app_name)

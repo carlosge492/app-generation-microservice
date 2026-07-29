@@ -44,6 +44,25 @@ Builds take minutes, so the API is asynchronous. **`x402_payment_verified` in a
 submitted PRD is discarded**: the PRD is buyer-supplied, so trusting that field
 would let anyone assert their own payment. Only the server's verifier sets it.
 
+Payment is real x402: the buyer signs an EIP-3009 `TransferWithAuthorization`
+(EIP-712), and the service recovers the signer, checks recipient, amount, chain
+and validity window, and claims the nonce atomically so one signature buys
+exactly one build.
+
+```bash
+X402_TOKEN_CONTRACT=0x036CbD...  X402_CHAIN_ID=84532 X402_PAY_TO=0xYourAddress        X402_PRICE_ATOMIC=500000   poetry run uvicorn src.service.app:app --port 8000
+```
+
+Configure nothing and the service refuses every payment — it fails closed rather
+than falling back to the development shared secret. `/healthz` reports which
+mode is active.
+
+**Verification is not settlement.** A valid signature proves the payer
+*authorised* a transfer; it does not prove they hold the balance or that the
+transfer landed on-chain. Submitting the authorization needs a facilitator —
+until one is configured, `/healthz` reports `settlement: verification-only`, and
+the service is accepting signed promises.
+
 ## Commands
 
 | What | Command |
@@ -108,6 +127,9 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Screens actually build at runtime | generated widget smoke tests | ✅ |
 | Repair loop recovers honestly | fault injection | ✅ |
 | x402 gate | unit tests | ✅ |
+| EIP-712/EIP-3009 signature verification | real keys, 28 tests | ✅ |
+| Replay protection | atomic claim, concurrent race test | ✅ |
+| On-chain settlement | — | ❌ needs a facilitator |
 | HTTP service, end to end | live server, PRD → APK download | ✅ |
 | Buyer cannot self-certify payment | forged flag → 402 | ✅ |
 | Claude generator — request shape | fake transport, 18 tests | ✅ |
@@ -118,7 +140,7 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Navigation / real Firestore I/O | — | ❌ needs an emulator |
 | Release signing / Play upload | — | ❌ debug keystore only |
 
-130 unit tests; eval sweep 11/11 against real analysis and widget tests;
+160 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout
@@ -137,7 +159,9 @@ src/
     smoke.py           generates widget tests from the output
     runtime.py         runs them
     ownership.py       which agent can fix which diagnostic
-  payments/x402.py     the payment gate + HTTP payment verifier
+  payments/x402.py     the payment gate + x402 verifier selection
+  payments/eip3009.py  EIP-712 signature recovery and field checks
+  payments/replay.py   single-use nonces, atomic claim
   service/             FastAPI app and the async job store
   build/pipeline.py    APK packaging (x402-gated)
   build/scaffold.py    generates android/ via `flutter create`

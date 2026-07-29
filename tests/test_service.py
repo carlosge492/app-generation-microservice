@@ -144,12 +144,54 @@ def test_succeeded_build_without_an_apk_is_404_not_a_broken_download(client):
     assert "packaging" in apk.json()["detail"]
 
 
-def test_healthz_reports_whether_payment_is_configured(client, monkeypatch):
-    monkeypatch.delenv("X402_SHARED_SECRET", raising=False)
-    body = client.get("/healthz").json()
+def test_unconfigured_deployment_refuses_every_payment(monkeypatch):
+    """Fail closed. A service that cannot verify payment must not accept it —
+    defaulting to the dev shared secret would sell builds to anyone who guesses
+    a string."""
+    for var in ("X402_SHARED_SECRET", "X402_TOKEN_CONTRACT",
+                "X402_CHAIN_ID", "X402_PAY_TO"):
+        monkeypatch.delenv(var, raising=False)
 
-    assert body["ok"] is True
-    assert body["payment_configured"] is False
+    with TestClient(create_app()) as bare:
+        health = bare.get("/healthz").json()
+        assert health["payment_configured"] is False
+        assert health["payment_mode"] == "none"
+
+        response = bare.post("/builds", json=PRD_BODY, headers={PAYMENT_HEADER: "anything"})
+        assert response.status_code == 402
+
+
+def test_healthz_distinguishes_verification_from_settlement(monkeypatch):
+    """Accepting signed-but-unsettled promises is a deployment choice, and an
+    operator should be able to see it without reading the source."""
+    monkeypatch.setenv("X402_SHARED_SECRET", "s")
+    monkeypatch.delenv("X402_FACILITATOR_URL", raising=False)
+
+    with TestClient(create_app()) as dev:
+        body = dev.get("/healthz").json()
+        assert body["payment_mode"] == "dev-shared-secret"
+        assert body["settlement"] == "verification-only"
+
+
+def test_challenge_tells_the_buyer_how_to_pay(monkeypatch):
+    """A 402 without the recipient, chain and token is unactionable — the client
+    would have to guess exactly the fields where a wrong guess still produces a
+    valid signature, for the wrong thing."""
+    monkeypatch.setenv("X402_TOKEN_CONTRACT", "0x036CbD53842c5426634e7929541eC2318f3dCF7e")
+    monkeypatch.setenv("X402_CHAIN_ID", "84532")
+    monkeypatch.setenv("X402_PAY_TO", "0x000000000000000000000000000000000000dEaD")
+    monkeypatch.setenv("X402_NETWORK", "base-sepolia")
+
+    with TestClient(create_app()) as paid:
+        body = paid.post("/builds", json=PRD_BODY).json()
+
+    accepts = body["accepts"][0]
+    assert accepts["network"] == "base-sepolia"
+    assert accepts["chainId"] == 84532
+    assert accepts["payTo"] == "0x000000000000000000000000000000000000dEaD"
+    assert accepts["verifyingContract"].lower().startswith("0x036cbd")
+    assert accepts["extra"]["version"] == "2"
+    assert body["error"], "the buyer should be told why this attempt failed"
 
 
 # --------------------------------------------------------------------------- #
