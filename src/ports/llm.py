@@ -163,7 +163,14 @@ Hard rules:
   fallback rather than throwing.
 - Firebase access goes through cloud_firestore inside providers/controllers.
 - lib/main.dart is the composition root: ensureInitialized, Firebase.initializeApp,
-  then runApp inside a ProviderScope.
+  then runApp inside a ProviderScope. A bare `Firebase.initializeApp()` throws
+  wherever there is no native config file — on web it fails an assertion inside
+  firebase_core_web — so the app never starts. Take the identifiers from
+  `String.fromEnvironment` (`FIREBASE_PROJECT_ID`, `FIREBASE_API_KEY`,
+  `FIREBASE_APP_ID`, `FIREBASE_MESSAGING_SENDER_ID`), pass a `FirebaseOptions`
+  built from them when the project id is non-empty, and pass `null` when it is
+  empty so a platform carrying google-services.json still works. Never bake a
+  real project's identifiers into the source.
 - Every file must be complete, parseable Dart with balanced braces.
 
 When you are given QA diagnostics, this is a REPAIR pass. Patch the specific

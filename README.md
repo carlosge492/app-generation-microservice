@@ -272,6 +272,7 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Claude generator (Opus 5) | full eval sweep | ✅ 11/11 |
 | APK packaging (template) | `flutter build apk --debug` | ✅ correct applicationId |
 | APK packaging (Opus output) | `flutter build apk --debug` | ✅ 145 MB, x402-gated |
+| The generated app starts at all | `main()` executed in Chrome | ✅ was broken in every app |
 | Real Firestore read/write | emulator + Chrome, generated app | ✅ template generator, web only |
 | Generated date fields survive a round trip | same | ✅ was broken; see below |
 | Claude output against a live Firestore | — | ❌ prompt warns of the trap, never run |
@@ -288,15 +289,27 @@ boundaries, the sockets and the `SIGKILL` are genuine; the server implementing
 `LMOVE` and key expiry is not. Running `scripts/verify_durable_execution.py`
 against a real Redis is a `REDIS_URL` away and has not been done.
 
-The Firestore rows earned their asterisk the hard way. Everything above them is
-static — `flutter analyze` proves the code type-checks, conformance proves it
-matches the PRD, the generated widget tests prove the screens build — and none
-of it executes a Firestore call. The first time one ran, it found that every
-generated app with a `date` field threw on reading back a document it had
-written itself: Firestore stores a `DateTime` as a `Timestamp` and hands back a
-`Timestamp`, and `data['x'] as DateTime?` is well-typed Dart that always throws.
-Fixed, and `scripts/verify_firestore_roundtrip.py` fails against the old mapper
-and passes against the new one, which is the only reason to trust it.
+Those rows earned their asterisk the hard way. Everything above them is static —
+`flutter analyze` proves the code type-checks, conformance proves it matches the
+PRD, the generated widget tests prove each screen builds in isolation with its
+providers overridden — and none of it runs the app. Actually running it found
+two bugs in every app the generators had ever produced.
+
+**The app could not start.** The composition root was `await
+Firebase.initializeApp();` with no options, and the generator emits no
+`google-services.json` either. On web that fails an assertion inside
+`firebase_core_web` before the first frame; natively there is no config file to
+fall back to. The app compiled, analysed clean, passed its widget tests and
+packaged into a release-ready APK — and died on launch. Identifiers now come
+from `--dart-define`, with `null` passed when none are supplied so a build
+carrying a native config file still works.
+
+**Dates threw on the way back in.** Firestore stores a `DateTime` as a
+`Timestamp` and hands back a `Timestamp`, so `data['x'] as DateTime?` — well-typed
+Dart — always threw the first time an app read a document it had written itself.
+
+Both fixes are guarded by tests that fail against the old output and pass
+against the new, which is the only reason to trust them.
 
 Two limits on that ✅. It ran in **Chrome, not on Android** — this machine has no
 AVD or system image — which is enough for a platform-independent Dart mapper bug
@@ -304,7 +317,7 @@ and not enough to claim the app works on a phone. And it covers the **template
 generator only**: the Claude generator's prompt now documents the same trap, but
 no Opus output has been put in front of a live Firestore.
 
-235 unit tests; eval sweep 11/11 against real analysis and widget tests;
+239 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout

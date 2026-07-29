@@ -274,9 +274,29 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'ui/app.dart';
 
+// Deliberately spelled differently from TemplateGenerator's version — a record
+// class instead of four consts — while making the same guarantee: the app can
+// actually initialise. A bare `Firebase.initializeApp()` throws wherever there
+// is no native config file.
+const _firebase = (
+  apiKey: String.fromEnvironment('FIREBASE_API_KEY'),
+  appId: String.fromEnvironment('FIREBASE_APP_ID'),
+  projectId: String.fromEnvironment('FIREBASE_PROJECT_ID'),
+  senderId: String.fromEnvironment('FIREBASE_MESSAGING_SENDER_ID'),
+);
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
+  await Firebase.initializeApp(
+    options: _firebase.projectId.isEmpty
+        ? null
+        : FirebaseOptions(
+            apiKey: _firebase.apiKey,
+            appId: _firebase.appId,
+            projectId: _firebase.projectId,
+            messagingSenderId: _firebase.senderId,
+          ),
+  );
   runApp(const ProviderScope(child: FieldNotesApp()));
 }
 """

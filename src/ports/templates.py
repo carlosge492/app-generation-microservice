@@ -418,9 +418,33 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'ui/app.dart';
 
+// Supplied at build time with --dart-define, so no buyer's project identifiers
+// are baked into generated source:
+//
+//   flutter run --dart-define=FIREBASE_PROJECT_ID=... --dart-define=FIREBASE_API_KEY=...
+//
+// Leave them unset on a platform that carries a native config file
+// (google-services.json, GoogleService-Info.plist) and Firebase reads that.
+const _apiKey = String.fromEnvironment('FIREBASE_API_KEY');
+const _appId = String.fromEnvironment('FIREBASE_APP_ID');
+const _projectId = String.fromEnvironment('FIREBASE_PROJECT_ID');
+const _senderId = String.fromEnvironment('FIREBASE_MESSAGING_SENDER_ID');
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp();
+  // A bare `Firebase.initializeApp()` throws on any platform without a native
+  // config file — on web it fails an assertion inside firebase_core_web rather
+  // than returning an error — so the app could not start at all.
+  await Firebase.initializeApp(
+    options: _projectId.isEmpty
+        ? null
+        : const FirebaseOptions(
+            apiKey: _apiKey,
+            appId: _appId,
+            projectId: _projectId,
+            messagingSenderId: _senderId,
+          ),
+  );
   runApp(const ProviderScope(child: $APP_CLASS()));
 }
 """)
