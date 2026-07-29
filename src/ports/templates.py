@@ -135,6 +135,36 @@ def dart_default(field_type: str) -> str:
     return {"text": "''", "number": "0", "bool": "false", "date": "DateTime.now()"}[field_type]
 
 
+def wire_read(name: str, field_type: str) -> str:
+    """How a field comes back *out* of Firestore, which is not always its Dart type.
+
+    Firestore has no date type of its own: a `DateTime` is stored as a
+    `Timestamp` and handed back as a `Timestamp`, so `data['x'] as DateTime?`
+    throws `type 'Timestamp' is not a subtype of type 'DateTime?'` the first
+    time a document written by this app is read back by it.
+
+    Nothing static catches that. It type-checks, `flutter analyze` is clean, and
+    the generated widget tests pass because they never put a real document
+    through this function — the failure needs a live Firestore, which is why it
+    survived until the emulator round-trip test went in.
+    """
+    if field_type == "date":
+        return f"(data['{name}'] as Timestamp?)?.toDate() ?? {dart_default(field_type)}"
+    return f"(data['{name}'] as {dart_type(field_type)}?) ?? {dart_default(field_type)}"
+
+
+def wire_write(name: str, field_type: str) -> str:
+    """How a field goes *in*. Explicit for dates, to mirror `wire_read`.
+
+    The SDK would convert a bare `DateTime` on write, so this is not fixing a
+    bug — it is refusing to rely on an implicit conversion in one direction
+    while doing the inverse by hand in the other.
+    """
+    if field_type == "date":
+        return f"Timestamp.fromDate({name})"
+    return name
+
+
 def screen_class(screen: Screen) -> str:
     return f"{pascal(screen.id)}Screen"
 
@@ -751,11 +781,11 @@ class TemplateGenerator:
             f"  final {dart_type(f.type)} {f.name};" for f in model.fields
         )
         from_map = "\n".join(
-            f"      {f.name}: (data['{f.name}'] as {dart_type(f.type)}?) "
-            f"?? {dart_default(f.type)},"
-            for f in model.fields
+            f"      {f.name}: {wire_read(f.name, f.type)}," for f in model.fields
         )
-        to_map = "\n".join(f"      '{f.name}': {f.name}," for f in model.fields)
+        to_map = "\n".join(
+            f"      '{f.name}': {wire_write(f.name, f.type)}," for f in model.fields
+        )
         return PROVIDERS.safe_substitute(
             CLASS=cls,
             VAR=var,

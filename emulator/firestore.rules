@@ -1,0 +1,20 @@
+// Emulator-only rules: everything is allowed.
+//
+// This file exists so the Firestore emulator has something to load, and is not
+// a template for anything a buyer should deploy. The emulator runs against a
+// `demo-*` project id, which never touches a real Firebase project and requires
+// no credentials, so there is nothing here to secure.
+//
+// What this deliberately does not do is prove the generated app's security
+// rules are correct — the generated app does not produce any. Proving reads and
+// writes work is a different claim from proving they are allowed only to the
+// right caller, and conflating the two is how an app ships world-readable.
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

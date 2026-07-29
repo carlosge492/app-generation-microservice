@@ -150,6 +150,17 @@ Hard rules:
   `update(FutureOr<State> Function(State), {onError})`, so a domain method
   `update(String id, {...})` is an invalid override and will not compile. Use a
   domain-specific name: `updateRecord`, `saveDraft`, `renameItem`.
+- Firestore has no date type. A `DateTime` is stored as a `Timestamp` and comes
+  back as a `Timestamp`, so `data['x'] as DateTime?` throws
+  `type 'Timestamp' is not a subtype of type 'DateTime?'` the first time the app
+  reads back a document it wrote. Deserialise with
+  `(data['x'] as Timestamp?)?.toDate()`. This is the trap that type-checks:
+  `flutter analyze` is clean and the widget tests pass, because catching it
+  needs a live Firestore. Whatever you choose, read it back the way you wrote
+  it: storing an ISO string and parsing it back is fine, and so is a Timestamp,
+  but `DateTime.tryParse('${data['x']}')` against a field you wrote as a
+  Timestamp parses the *stringified* Timestamp, fails, and silently yields your
+  fallback rather than throwing.
 - Firebase access goes through cloud_firestore inside providers/controllers.
 - lib/main.dart is the composition root: ensureInitialized, Firebase.initializeApp,
   then runApp inside a ProviderScope.
