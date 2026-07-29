@@ -280,7 +280,8 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Claude output against a live Firestore | Opus 5 app, emulator + Chrome | ✅ round trip passes |
 | Discovery works on model code nobody wrote for it | Opus, Haiku, template, fixture | ✅ four serialiser shapes |
 | Declared navigation is actually wired | conformance `unreachable_screen` | ✅ found 3 dead routes |
-| Navigation works at runtime (tap → arrive) | — | ❌ static check only |
+| The destination renders when navigated to | app's own `main()` + `Navigator`, Chrome | ✅ generated per PRD |
+| A user tapping the affordance arrives | — | ❌ deliberately not tested; see below |
 | Release build is unsigned, not debug-signed | real `--release` build, `apksigner` | ✅ verified unsigned |
 | The artifact is signable by the buyer | signed with a throwaway keystore | ✅ verifies against their cert |
 | Play upload | — | ❌ needs a Play account and a listing |
@@ -385,11 +386,41 @@ for — `auth_flow` and `many_screens` — because the fix had only covered list
 screens, and auth, settings and detail screens had no affordance to hang
 navigation off at all.
 
-This is a **static** guarantee: something in the app navigates to every declared
-target. It is not proof that a user tapping the button arrives, which needs the
-emulator-and-Chrome path the Firestore round trip uses.
+`unreachable_screen` is a **static** guarantee: something in the app navigates to
+every declared target. It says nothing about whether the destination works, and
+it cannot — `'/capture': (context) => const CaptureScreen()` satisfies it whether
+or not `CaptureScreen` survives being built.
 
-266 unit tests; eval sweep 11/11 against real analysis and widget tests;
+So the QA phase also generates `integration_test/navigation_test.dart`, which
+boots the app through its **own `main()`** — the real composition root, the real
+`ProviderScope`, the real Firebase initialisation — drives its own `Navigator` to
+each declared target, and checks the destination is on screen. Delete a route
+from the generated app and it fails with `Could not find a generator for route
+RouteSettings("/capture")`, which is how we know it is testing anything.
+
+Destinations are identified by their **PRD title**, the one label that is the
+same whatever a generator calls its classes, files or routes. Matching
+`<Id>Screen` would be matching one generator's convention.
+
+What it deliberately does **not** do is hunt for the button. Tapping whatever
+looks tappable until the destination appears is possible, but it depends on
+widget choices that vary far more than a title does, and a flaky navigation test
+is worse than an honest static one. So "a user can get there" rests on
+`unreachable_screen`, and "the destination works once reached" rests on this.
+
+**Automation needs its own browser.** `flutter drive -d chrome` cannot get a
+controllable Chrome while an ordinary Chrome session is running — the launch is
+delegated to the existing instance, the debug port is never opened, and `dwds`
+fails with `AppConnectionException` after about 25 seconds. It reads like a code
+fault and is not one. Point `CHROME_EXECUTABLE` at a Chrome-for-Testing binary
+whose version matches `chromedriver`:
+
+```bash
+npx @puppeteer/browsers install chrome@150.0.7871.124 --path ~/chrome-for-testing
+export CHROME_EXECUTABLE=~/chrome-for-testing/chrome/win64-150.0.7871.124/chrome-win64/chrome.exe
+```
+
+274 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout
@@ -407,6 +438,7 @@ src/
     conformance.py     does the app match the PRD?
     smoke.py           generates widget tests from the output
     roundtrip.py       generates the Firestore round-trip test from the output
+    navigation.py      generates the runtime navigation test from the PRD
     runtime.py         runs them
     ownership.py       which agent can fix which diagnostic
   payments/x402.py     the payment gate + x402 verifier selection

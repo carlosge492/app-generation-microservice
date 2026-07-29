@@ -23,6 +23,7 @@ from src.ports.conformance import check_conformance
 from src.ports.generator import CodeGenerator
 from src.ports.ownership import owner_of, route_for
 from src.ports.runtime import TestRunner
+from src.ports.navigation import build_navigation_test
 from src.ports.roundtrip import build_roundtrip_tests
 from src.ports.smoke import build_smoke_tests
 from src.ports.templates import ensure_lint_dependency, repair_pubspec_description
@@ -159,6 +160,8 @@ def make_qa_node(analyzer: DartAnalyzer, runner: TestRunner | None = None) -> No
         # one check that catches wire-type bugs, for whoever can run it.
         roundtrip = build_roundtrip_tests(_prd(state), files)
         files.update(roundtrip)
+        navigation = build_navigation_test(_prd(state), files)
+        files.update(navigation)
 
         # Remove anything we wrote on a previous pass that is no longer part of
         # the app. A repair pass that renames a screen used to leave the old
@@ -226,7 +229,9 @@ def make_qa_node(analyzer: DartAnalyzer, runner: TestRunner | None = None) -> No
             f"qa: {len(files)} file(s) analysed "
             f"({len(smoke)} smoke test(s), "
             f"{sum(1 for p in roundtrip if p.endswith('_roundtrip_test.dart'))} "
-            f"round-trip test(s)), "
+            f"round-trip test(s), "
+            f"{sum(1 for p in navigation if p.endswith('navigation_test.dart'))} "
+            f"navigation test(s)), "
             f"{len(errors)} error(s), "
             f"{len(diagnostics) - len(errors)} non-fatal"
         )

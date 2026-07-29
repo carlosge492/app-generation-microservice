@@ -184,6 +184,51 @@ def _fab_navigation(screen: Screen) -> str:
     return ""
 
 
+def _plain_body(screen: Screen, cupertino: bool) -> str:
+    """The body of a screen with no list or form: a title, plus any nav buttons.
+
+    Built here rather than in the template because the const-ness depends on the
+    content. With no navigate actions the whole subtree is constant and
+    `prefer_const_constructors` rightly complains if it is not marked so; with
+    buttons it cannot be. Emitting the non-const shape unconditionally traded a
+    real bug for four lint infos on every settings screen.
+    """
+    title = f"Text('{dart_string(screen.title)}')"
+    buttons = _navigation_buttons(screen, cupertino)
+    pad = " " * (6 if cupertino else 6)
+
+    if not buttons:
+        centre = (
+            f"Center(\n"
+            f"{pad}  child: Padding(\n"
+            f"{pad}    padding: EdgeInsets.all(24),\n"
+            f"{pad}    child: {title},\n"
+            f"{pad}  ),\n"
+            f"{pad})"
+        )
+        if cupertino:
+            return f"const SafeArea(\n{pad}child: {centre},\n{pad[:-2]})"
+        return f"const {centre}"
+
+    centre = (
+        f"Center(\n"
+        f"{pad}  child: Padding(\n"
+        f"{pad}    padding: const EdgeInsets.all(24),\n"
+        f"{pad}    child: Column(\n"
+        f"{pad}      mainAxisSize: MainAxisSize.min,\n"
+        f"{pad}      children: <Widget>[\n"
+        f"{pad}        const {title},\n"
+        f"{buttons}\n"
+        f"{pad}      ],\n"
+        f"{pad}    ),\n"
+        f"{pad}  ),\n"
+        f"{pad})"
+    )
+    if cupertino:
+        return f"SafeArea(\n{pad}child: {centre},\n{pad[:-2]})"
+    return centre
+
+
 def _navigation_buttons(screen: Screen, cupertino: bool = False) -> str:
     """One button per `navigate` action, for screens with no other affordance.
 
@@ -449,26 +494,14 @@ class $CLASS extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return CupertinoPageScaffold(
       navigationBar: CupertinoNavigationBar(middle: const Text('$TITLE')),
-      child: SafeArea(
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                const Text('$TITLE'),
-$NAV_BUTTONS
-              ],
-            ),
-          ),
-        ),
-      ),
+      child: $BODY,
     );
   }
 }
 """)
 
-MAIN_DART = Template("""import 'package:firebase_core/firebase_core.dart';
+MAIN_DART = Template("""import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/$FRAMEWORK.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -486,6 +519,11 @@ const _appId = String.fromEnvironment('FIREBASE_APP_ID');
 const _projectId = String.fromEnvironment('FIREBASE_PROJECT_ID');
 const _senderId = String.fromEnvironment('FIREBASE_MESSAGING_SENDER_ID');
 
+// host:port of a Firestore emulator. Empty in every real build, which leaves the
+// call below unreached; set it to run the app against a local emulator instead
+// of a project. This is what makes the generated integration tests runnable.
+const _emulator = String.fromEnvironment('FIRESTORE_EMULATOR');
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // A bare `Firebase.initializeApp()` throws on any platform without a native
@@ -501,6 +539,13 @@ Future<void> main() async {
             messagingSenderId: _senderId,
           ),
   );
+  if (_emulator.isNotEmpty) {
+    final separator = _emulator.lastIndexOf(':');
+    FirebaseFirestore.instance.useFirestoreEmulator(
+      _emulator.substring(0, separator),
+      int.parse(_emulator.substring(separator + 1)),
+    );
+  }
   runApp(const ProviderScope(child: $APP_CLASS()));
 }
 """)
@@ -584,18 +629,7 @@ class $CLASS extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
       appBar: AppBar(title: const Text('$TITLE')),
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              const Text('$TITLE'),
-$NAV_BUTTONS
-            ],
-          ),
-        ),
-      ),
+      body: $BODY,
     );
   }
 }
@@ -786,7 +820,7 @@ class TemplateGenerator:
             return plain.safe_substitute(
                 CLASS=cls,
                 TITLE=dart_string(screen.title),
-                NAV_BUTTONS=_navigation_buttons(screen, cupertino),
+                BODY=_plain_body(screen, cupertino),
             )
 
         module = snake(model.name) + "_providers"
