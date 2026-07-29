@@ -25,12 +25,13 @@ from src.payments.facilitator import (
 from src.payments.replay import InMemoryNonceStore, RedisNonceStore
 from src.service.jobs import (
     BuildJob,
-    BuildRunner,
     BuildStatus,
     InMemoryJobStore,
     RedisJobStore,
     reap_stale,
 )
+from src.service.queue import RedisBuildQueue
+from src.service.worker import BuildWorker
 
 TOKEN = TokenConfig(
     chain_id=84532,
@@ -181,8 +182,9 @@ def test_corrupt_job_payload_is_none_not_a_crash(redis_client):
 
 
 def test_abandoned_build_is_reaped_rather_than_running_for_ever():
-    """Execution is in-process, so a worker restart orphans in-flight builds. A
-    status that will never change is worse than a failure: the caller polls it
+    """The backstop for a build no queue will recover — an in-memory queue that
+    died with its process, leaving job records in a shared store. A status that
+    will never change is worse than a failure: the caller polls it
     indefinitely."""
     store = InMemoryJobStore()
     job = store.create("Orphan")
@@ -214,20 +216,22 @@ def test_finished_builds_are_left_alone():
     assert reap_stale(store, job).status is BuildStatus.SUCCEEDED
 
 
-def test_runner_persists_transitions_so_other_workers_see_progress(redis_client):
+def test_worker_persists_transitions_so_other_workers_see_progress(redis_client):
+    """The worker owns the job record, not just its own memory: a second process
+    answering `GET /builds/{id}` has to see the outcome."""
     store = RedisJobStore(redis_client)
-    runner = BuildRunner(store)
+    queue = RedisBuildQueue(redis_client)
     job = store.create("Persisted")
+    queue.push(job.id)
 
-    runner.submit(job, lambda j: setattr(j, "status", BuildStatus.SUCCEEDED))
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        if store.get(job.id).status is BuildStatus.SUCCEEDED:
-            break
-        time.sleep(0.02)
+    worker = BuildWorker(
+        store, queue, lambda _j: lambda j: setattr(j, "status", BuildStatus.SUCCEEDED)
+    )
+    assert worker.run_once() is True
 
-    assert store.get(job.id).status is BuildStatus.SUCCEEDED
-    assert store.get(job.id).finished_at is not None
+    persisted = RedisJobStore(redis_client).get(job.id)
+    assert persisted.status is BuildStatus.SUCCEEDED
+    assert persisted.finished_at is not None
 
 
 # --------------------------------------------------------------------------- #

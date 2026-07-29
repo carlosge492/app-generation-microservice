@@ -108,10 +108,49 @@ one atomic round trip, so the time-of-check/time-of-use protection holds across
 workers rather than only within one interpreter. A Redis outage refuses payment
 rather than allowing replays.
 
-Job *state* is shared, but job *execution* is not: the accepting worker runs the
-build in its own thread pool. Restart that worker and the build is lost —
-`reap_stale` fails such jobs rather than leaving them reporting `running` for
-ever. Durable execution needs a queue and pull-based workers.
+### Surviving a restart
+
+The money moves on-chain before the build starts, so losing a build to a deploy
+means having taken payment for nothing. Execution is therefore durable, not just
+job *state*: `POST /builds` settles the payment, writes the PRD onto the job
+record, and pushes the id onto a queue. Workers pull from it.
+
+```bash
+BUILD_WORKER_EMBEDDED=0 poetry run uvicorn src.service.app:app --port 8000  # accepts
+poetry run python -m src.service.worker                                     # builds
+```
+
+An API process builds as well as accepts by default, so a single-container
+deployment needs neither of those flags; set `BUILD_WORKER_EMBEDDED=0` once
+requests and builds want scaling apart.
+
+A worker holds a lease on the job it is building and renews it while it works.
+Kill the worker and the lease lapses, another worker returns the job to the
+queue, and it is rebuilt from the stored PRD — which is why the PRD is stored
+rather than captured in a closure, as it was when execution lived inside the
+accepting process. `scripts/verify_durable_execution.py` demonstrates exactly
+that, across real processes and a real `SIGKILL`.
+
+Two things this deliberately does not promise. A lease **bounds** duplicate work
+rather than preventing it: a worker partitioned from Redis for longer than its
+lease is indistinguishable from a dead one, so its build may be handed on while
+it is still running. `renew` returning False is how the stalled worker learns to
+discard its result, but the overlap is real, and it costs compute rather than
+money — the payment settled once, before the job was queued. And retries are
+**bounded** (`BUILD_MAX_ATTEMPTS`, default 3): without that, one build that
+reliably kills its worker would be requeued into the next one and take the fleet
+down a process at a time.
+
+| Variable | Default | What it is for |
+| --- | --- | --- |
+| `BUILD_WORKER_EMBEDDED` | `1` | whether the API process also builds |
+| `BUILD_LEASE_SECONDS` | `300` | how long a silent worker keeps its job |
+| `BUILD_HEARTBEAT_SECONDS` | `30` | how often a working worker says so |
+| `BUILD_MAX_ATTEMPTS` | `3` | before a build is given up on for good |
+
+`/healthz` reports `durable_execution`, which is true only when the queue *and*
+the job store are both shared — a Redis queue over an in-memory job store loses
+the record the build would be resumed from.
 
 ## Commands
 
@@ -122,6 +161,9 @@ ever. Durable execution needs a queue and pull-based workers.
 | Eval sweep (real analysis) | `poetry run python evals/run.py --analyzer dart --flutter-root "C:\flutter"` |
 | Eval sweep (+ widget tests) | add `--run-tests` |
 | Unit tests | `poetry run pytest` |
+| Build worker (pulls from the queue) | `poetry run python -m src.service.worker` |
+| Prove a build survives a killed worker | `poetry run python scripts/verify_durable_execution.py` |
+| Check the x402 payer is funded | `poetry run python scripts/check_x402_funding.py` |
 
 Useful flags: `--generator {template,claude}`, `--analyzer {stub,dart}`,
 `--max-repairs N`, `--build-dir PATH`, `--clean`, `--execute`.
@@ -183,7 +225,8 @@ Honest status, because "it compiles" and "it works" are different claims:
 | On-chain settlement | live, Base Sepolia | ✅ real tx, ~1.2s |
 | Replay refused on-chain | store bypassed | ✅ `duplicate_settlement` |
 | Multi-process replay safety | 2 uvicorn workers, shared Redis | ✅ replay refused across processes |
-| Durable build execution | — | ❌ in-process; a restart loses in-flight builds |
+| Durable build execution | worker killed mid-build, across processes | ✅ rebuilt by another worker |
+| Duplicate work bounded, not excluded | lease lapses under a stall | ⚠️ by design — see above |
 | HTTP service, end to end | live server, PRD → APK download | ✅ |
 | Buyer cannot self-certify payment | forged flag → 402 | ✅ |
 | Claude generator — request shape | fake transport, 18 tests | ✅ |
@@ -194,7 +237,15 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Navigation / real Firestore I/O | — | ❌ needs an emulator |
 | Release signing / Play upload | — | ❌ debug keystore only |
 
-192 unit tests; eval sweep 11/11 against real analysis and widget tests;
+One caveat on the two Redis rows, since "✅" is doing real work there. There is
+no Redis daemon on the development machine, so both were verified against
+`fakeredis` — for the unit tests in-process, and for the cross-process durability
+run over `TcpFakeServer`, a real TCP socket speaking real RESP. The process
+boundaries, the sockets and the `SIGKILL` are genuine; the server implementing
+`LMOVE` and key expiry is not. Running `scripts/verify_durable_execution.py`
+against a real Redis is a `REDIS_URL` away and has not been done.
+
+211 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout
@@ -216,7 +267,11 @@ src/
   payments/x402.py     the payment gate + x402 verifier selection
   payments/eip3009.py  EIP-712 signature recovery and field checks
   payments/replay.py   single-use nonces, atomic claim
-  service/             FastAPI app and the async job store
+  service/
+    app.py             FastAPI app; accepts and pays, then queues
+    jobs.py            the job record (including the PRD) and its store
+    queue.py           reliable queue: atomic reserve, leases, requeue
+    worker.py          pull-based workers; heartbeats and bounded retries
   build/pipeline.py    APK packaging (x402-gated)
   build/scaffold.py    generates android/ via `flutter create`
 evals/

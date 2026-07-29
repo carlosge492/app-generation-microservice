@@ -1,21 +1,16 @@
-"""Build jobs: shared state, in-process execution.
+"""Build jobs: the record of one paid build.
 
 A build runs the graph, calls a model several times and shells out to Gradle, so
 it takes minutes — far too long to hold an HTTP connection open. `POST /builds`
 accepts the work and returns an id.
 
-Storage and execution are separate concerns and are separated here. Job *state*
-lives in a store that can be shared across processes, so any uvicorn worker can
-answer `GET /builds/{id}` for a build another worker is running. Job *execution*
-is still a thread pool inside the accepting worker.
-
-That asymmetry is worth stating rather than discovering: a shared store makes
-status readable everywhere, but the work itself is not distributed and not
-durable. Restart the worker running a build and that build is lost — its state
-will sit at `running` until it is reaped. Real durability needs a queue and
-workers that pull from it, which is a deployment change rather than a code
-tweak, so `reap_stale` exists to stop abandoned jobs lying about their status
-instead of pretending the problem is solved.
+Storage and execution are separate concerns and are separated here: this module
+owns what a job *is* and where it is kept, `queue.py` owns who gets to run it,
+and `worker.py` owns running it. The job record is the handover point, which is
+why it carries the PRD. Holding the PRD in a closure — as this did while
+execution lived in the accepting process — meant the work existed only in the
+memory of one process, so no other worker could pick up a build even in
+principle. Durable execution starts with writing down what was bought.
 """
 
 from __future__ import annotations
@@ -24,12 +19,11 @@ import json
 import logging
 import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 log = logging.getLogger(__name__)
 
@@ -55,8 +49,20 @@ class BuildJob:
     build_dir: str | None = None
     heartbeat_at: datetime | None = None
     settlement_tx: str | None = None
+    # The work itself, stored rather than closed over, so a worker that did not
+    # accept this build can still run it. See the module docstring.
+    prd: dict[str, Any] | None = None
+    # Set only by the path that settled a payment. The worker checks it before
+    # building, so "it was in the queue" is never by itself the authorization —
+    # the same reason the buyer's own `x402_payment_verified` is discarded.
+    paid: bool = False
+    # How many times a worker has picked this up. Bounded in `worker.py`: a
+    # build that kills its worker would otherwise be retried for ever.
+    attempts: int = 0
 
     def public(self) -> dict[str, Any]:
+        """What the buyer sees. `prd` is deliberately absent — they sent it, and
+        echoing it back on every poll of a minutes-long build is pure weight."""
         return {
             "id": self.id,
             "app_name": self.app_name,
@@ -67,6 +73,9 @@ class BuildJob:
             "diagnostics": self.diagnostics,
             "failure": self.failure,
             "settlement_tx": self.settlement_tx,
+            # A buyer polling a build that quietly restarted deserves to see
+            # that it did, rather than wondering why the log went backwards.
+            "attempts": self.attempts,
             "apk_available": bool(self.apk_path and Path(self.apk_path).exists()),
         }
 
@@ -90,20 +99,26 @@ class BuildJob:
 
 
 class JobStore(Protocol):
-    def create(self, app_name: str) -> BuildJob: ...
+    def create(self, app_name: str, prd: dict[str, Any] | None = ...) -> BuildJob: ...
     def get(self, job_id: str) -> BuildJob | None: ...
     def save(self, job: BuildJob) -> None: ...
 
 
 class InMemoryJobStore:
-    """Single-process job state. Fine for a CLI-shaped deployment."""
+    """Single-process job state. Fine for a CLI-shaped deployment.
+
+    Note what this cannot do however durable the queue is: the records live in
+    one process, so a restart loses them even if the queue kept the ids. Pairing
+    a durable queue with this store is a misconfiguration, and `/healthz`
+    reports durability from both.
+    """
 
     def __init__(self) -> None:
         self._jobs: dict[str, BuildJob] = {}
         self._lock = threading.Lock()
 
-    def create(self, app_name: str) -> BuildJob:
-        job = BuildJob(id=uuid.uuid4().hex, app_name=app_name)
+    def create(self, app_name: str, prd: dict[str, Any] | None = None) -> BuildJob:
+        job = BuildJob(id=uuid.uuid4().hex, app_name=app_name, prd=prd)
         with self._lock:
             self._jobs[job.id] = job
         return job
@@ -121,13 +136,14 @@ class RedisJobStore:
     """Job state shared across workers.
 
     Unlike the nonce store, this one does not need compare-and-set: a job is
-    created once by the worker that accepted it and only ever written by the
-    worker running it, so last-write-wins is correct here. The nonce store's
-    `SETNX` matters because two callers race for the same key; nothing races for
-    a job id.
+    created once by the worker that accepted it and, at any moment, written only
+    by whichever worker holds its lease, so last-write-wins is correct here. The
+    nonce store's `SETNX` matters because two callers race for the same key; the
+    queue's leases keep anything from racing for a job id.
 
     Jobs expire, because a build log is not a permanent record and an unbounded
-    key space is an outage waiting to happen.
+    key space is an outage waiting to happen. The queue uses the same retention,
+    so a job record and its place in the queue disappear together.
     """
 
     def __init__(self, client: Any, prefix: str = "build:job:", ttl: int = 7 * 24 * 3600):
@@ -138,8 +154,8 @@ class RedisJobStore:
     def _key(self, job_id: str) -> str:
         return f"{self._prefix}{job_id}"
 
-    def create(self, app_name: str) -> BuildJob:
-        job = BuildJob(id=uuid.uuid4().hex, app_name=app_name)
+    def create(self, app_name: str, prd: dict[str, Any] | None = None) -> BuildJob:
+        job = BuildJob(id=uuid.uuid4().hex, app_name=app_name, prd=prd)
         self.save(job)
         return job
 
@@ -161,11 +177,22 @@ STALE_AFTER = timedelta(minutes=30)
 
 
 def reap_stale(store: JobStore, job: BuildJob, now: datetime | None = None) -> BuildJob:
-    """Fail a job whose worker died mid-build.
+    """Fail a job that no worker is going to finish.
 
-    Execution is in-process, so a restart abandons whatever that worker was
-    running and its state stays `running` for ever. A status that will never
-    change is worse than a failure, because a caller polls it indefinitely.
+    The queue's leases recover a build whose worker died: it goes back to
+    `pending` and somebody picks it up. That recovery needs the queue to have
+    outlived the worker, which is true of the Redis queue and false of the
+    in-memory one — kill that process and its pending list dies with it, while
+    the job records in a shared store live on, describing builds that will never
+    run again.
+
+    This is the backstop for exactly that case, and for a job whose id was lost
+    from the queue by any other means. A status that will never change is worse
+    than a failure, because a caller polls it indefinitely.
+
+    The threshold is measured from the last heartbeat, and a requeue refreshes
+    it, so a build waiting its turn behind a long queue is not mistaken for an
+    abandoned one.
     """
     if job.status not in {BuildStatus.RUNNING, BuildStatus.QUEUED}:
         return job
@@ -176,42 +203,11 @@ def reap_stale(store: JobStore, job: BuildJob, now: datetime | None = None) -> B
 
     job.status = BuildStatus.FAILED
     job.failure = (
-        "build was abandoned — the worker running it stopped reporting. "
-        "Execution is in-process, so a restart loses in-flight builds."
+        "build was abandoned — no worker has reported on it for "
+        f"{int(STALE_AFTER.total_seconds() // 60)} minutes, and none is "
+        "expected to. A durable queue (REDIS_URL) lets an abandoned build be "
+        "retried by another worker instead."
     )
     job.finished_at = moment
     store.save(job)
     return job
-
-
-class BuildRunner:
-    """Runs builds on a bounded thread pool, persisting every transition."""
-
-    def __init__(self, store: JobStore, max_workers: int = 2) -> None:
-        self.store = store
-        self._pool = ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="build"
-        )
-
-    def submit(self, job: BuildJob, work: Callable[[BuildJob], None]) -> None:
-        def run() -> None:
-            job.status = BuildStatus.RUNNING
-            job.heartbeat_at = datetime.now(timezone.utc)
-            self.store.save(job)
-            try:
-                work(job)
-                if job.status is BuildStatus.RUNNING:
-                    job.status = BuildStatus.FAILED
-                    job.failure = "build finished without reporting an outcome"
-            except Exception as exc:  # never leave a job wedged in RUNNING
-                job.status = BuildStatus.FAILED
-                job.failure = f"{type(exc).__name__}: {exc}"
-            finally:
-                job.finished_at = datetime.now(timezone.utc)
-                job.heartbeat_at = job.finished_at
-                self.store.save(job)
-
-        self._pool.submit(run)
-
-    def shutdown(self) -> None:
-        self._pool.shutdown(wait=False, cancel_futures=True)

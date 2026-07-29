@@ -14,7 +14,9 @@ from fastapi.testclient import TestClient
 
 from src.payments.x402 import PAYMENT_HEADER, DevPaymentVerifier
 from src.service.app import _verified_prd, create_app
-from src.service.jobs import BuildRunner, BuildStatus, InMemoryJobStore
+from src.service.jobs import BuildStatus, InMemoryJobStore
+from src.service.queue import InMemoryBuildQueue
+from src.service.worker import BuildWorker
 from src.prd.schema import load_prd
 
 SECRET = "test-secret"
@@ -199,34 +201,30 @@ def test_challenge_tells_the_buyer_how_to_pay(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
+def _worker(store, queue, work):
+    return BuildWorker(store, queue, lambda _job: work)
+
+
 def test_a_crashing_build_never_stays_running():
-    store = InMemoryJobStore()
-    runner = BuildRunner(store)
+    store, queue = InMemoryJobStore(), InMemoryBuildQueue()
     job = store.create("Boom")
+    queue.push(job.id)
 
     def explode(_job):
         raise RuntimeError("gradle fell over")
 
-    runner.submit(job, explode)
-    deadline = time.time() + 5
-    while job.status is not BuildStatus.FAILED and time.time() < deadline:
-        time.sleep(0.02)
+    _worker(store, queue, explode).run_once()
 
     assert job.status is BuildStatus.FAILED
     assert "gradle fell over" in job.failure
 
 
 def test_work_that_reports_no_outcome_is_treated_as_failure():
-    store = InMemoryJobStore()
-    runner = BuildRunner(store)
+    store, queue = InMemoryJobStore(), InMemoryBuildQueue()
     job = store.create("Silent")
-    runner.submit(job, lambda _job: None)
+    queue.push(job.id)
 
-    deadline = time.time() + 5
-    while job.status is BuildStatus.QUEUED or job.status is BuildStatus.RUNNING:
-        if time.time() > deadline:
-            break
-        time.sleep(0.02)
+    _worker(store, queue, lambda _job: None).run_once()
 
     assert job.status is BuildStatus.FAILED
     assert "without reporting an outcome" in job.failure

@@ -20,6 +20,7 @@ replaced with whatever the server's verifier concluded from the request. See
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -45,13 +46,25 @@ from src.payments.facilitator import HttpFacilitator
 from src.payments.replay import InMemoryNonceStore, RedisNonceStore
 from src.service.jobs import (
     BuildJob,
-    BuildRunner,
     BuildStatus,
     InMemoryJobStore,
     JobStore,
     RedisJobStore,
     reap_stale,
 )
+from src.service.queue import (
+    DEFAULT_LEASE_SECONDS,
+    BuildQueue,
+    InMemoryBuildQueue,
+    RedisBuildQueue,
+)
+from src.service.worker import (
+    DEFAULT_HEARTBEAT_SECONDS,
+    DEFAULT_MAX_ATTEMPTS,
+    BuildWorker,
+)
+
+log = logging.getLogger(__name__)
 
 BUILD_ROOT = Path(os.getenv("BUILD_ROOT", "generated_apps/service"))
 
@@ -150,6 +163,8 @@ def _verifier_from_env() -> tuple[PaymentVerifier, str, TokenConfig | None]:
 def create_app(
     verifier: PaymentVerifier | None = None,
     store: JobStore | None = None,
+    queue: BuildQueue | None = None,
+    run_worker: bool | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="App-Generation Microservice",
@@ -163,14 +178,34 @@ def create_app(
     app.state.pay_to = os.getenv("X402_PAY_TO")
     app.state.price_atomic = int(os.getenv("X402_PRICE_ATOMIC", "500000"))
 
+    client = _redis() if (store is None or queue is None) else None
     if store is not None:
         app.state.store = store
         app.state.store_backend = "injected"
     else:
-        client = _redis()
         app.state.store = RedisJobStore(client) if client else InMemoryJobStore()
         app.state.store_backend = "redis" if client else "in-memory"
-    app.state.runner = BuildRunner(app.state.store)
+
+    if queue is not None:
+        app.state.queue = queue
+    else:
+        app.state.queue = RedisBuildQueue(client) if client else InMemoryBuildQueue()
+
+    # An API process builds as well as accepts by default, so a single-container
+    # deployment keeps working with no extra moving parts. Set
+    # BUILD_WORKER_EMBEDDED=0 on the API and run `python -m src.service.worker`
+    # separately once builds and requests want scaling apart.
+    embedded = (
+        os.getenv("BUILD_WORKER_EMBEDDED", "1") != "0"
+        if run_worker is None else run_worker
+    )
+    app.state.worker = (
+        BuildWorker(
+            app.state.store, app.state.queue, build_work, **_worker_settings()
+        ) if embedded else None
+    )
+    if app.state.worker is not None:
+        app.state.worker.start()
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
@@ -197,6 +232,18 @@ def create_app(
             "multi_process_safe": (
                 app.state.store_backend == "redis" and bool(os.getenv("REDIS_URL"))
             ),
+            # Whether a paid build survives this process dying. Both halves have
+            # to be durable: a shared queue over an in-memory job store loses the
+            # record the build would be resumed from, which is a misconfiguration
+            # worth seeing in one line rather than deducing after an incident.
+            "durable_execution": (
+                app.state.queue.durable and app.state.store_backend == "redis"
+            ),
+            # None rather than a 500: an unreadable queue is exactly when an
+            # operator is reading /healthz, and losing the other fields to a
+            # traceback is the least useful moment to do it.
+            "queue_depth": _queue_depth(app.state.queue),
+            "embedded_worker": app.state.worker is not None,
         }
 
     @app.post("/builds", status_code=202)
@@ -225,8 +272,16 @@ def create_app(
             )
 
         store: JobStore = request.app.state.store
-        job = store.create(prd.app_name)
+        # The PRD is stored on the job rather than captured in a closure, so a
+        # worker that never saw this request can still build it. The buyer's own
+        # `x402_payment_verified` is stored as sent and overridden at build time
+        # by `_verified_prd`, keeping one place that decides it.
+        job = store.create(prd.app_name, prd=prd.model_dump(mode="json"))
         job.build_dir = str(BUILD_ROOT / job.id)
+        # Reaching here means the verifier settled. Recording that on the job is
+        # what lets the worker check it instead of inferring payment from the
+        # mere fact that something was queued.
+        job.paid = True
         # Explicit, not getattr-with-a-default: the buyer's proof of payment
         # went missing for a while behind exactly that kind of silent fallback.
         verifier = request.app.state.verifier
@@ -235,7 +290,9 @@ def create_app(
             if isinstance(verifier, X402Verifier) else None
         )
         store.save(job)
-        request.app.state.runner.submit(job, _make_runner(prd))
+        # Saved before queued, never the other way round: a worker can reserve
+        # the id the instant it is pushed, and would find no record to build.
+        request.app.state.queue.push(job.id)
         return JSONResponse(
             status_code=202,
             content={"id": job.id, "status": job.status.value},
@@ -288,7 +345,24 @@ def _verified_prd(prd: PRD) -> dict[str, Any]:
     return payload
 
 
-def _make_runner(prd: PRD):
+def build_work(job: BuildJob):
+    """What building this job actually means, for a worker that only has the record.
+
+    Handed to `BuildWorker` so that module stays free of LangGraph, PRDs and
+    Flutter, and the queue mechanics can be tested without any of them.
+
+    Both checks here are refusals, not assertions: an unpaid or unreadable job
+    should fail with a reason the buyer can act on, and the worker turns a raised
+    exception into exactly that.
+    """
+    if not job.paid:
+        raise PermissionError(
+            "refusing to build a job that no payment path marked as paid"
+        )
+    if not job.prd:
+        raise ValueError("job has no PRD stored; nothing to build")
+
+    prd = PRD.model_validate(job.prd)
     settings = _settings()
 
     def run(job: BuildJob) -> None:
@@ -310,7 +384,10 @@ def _make_runner(prd: PRD):
             initial_state(_verified_prd(prd), str(build_dir))
         )
 
-        job.log = list(final.get("log", []))
+        # Appended, not assigned: a requeued build already carries the note
+        # saying its first attempt was abandoned, and overwriting that would
+        # hide the retry from the only person watching the log.
+        job.log = [*job.log, *final.get("log", [])]
         job.diagnostics = [d.render() for d in final.get("diagnostics", [])]
 
         if final.get("phase") == "failed":
@@ -324,6 +401,45 @@ def _make_runner(prd: PRD):
             job.apk_path = final.get("apk_path") or None
 
     return run
+
+
+def _queue_depth(queue: BuildQueue) -> int | None:
+    try:
+        return queue.depth()
+    except Exception:  # noqa: BLE001 - /healthz must answer even when Redis is down
+        log.exception("could not read the queue depth")
+        return None
+
+
+def _worker_settings() -> dict[str, Any]:
+    """Lease timings, which are a deployment decision rather than a constant.
+
+    The lease has to outlast the slowest thing a build does between heartbeats,
+    and the heartbeat has to be short enough that a dead worker's build is
+    retried while the buyer is still waiting. A deployment generating large apps
+    against a cold Gradle cache sits at a different point on that trade than one
+    running the template generator, and neither should have to edit the source.
+    """
+    return {
+        "lease_seconds": int(os.getenv("BUILD_LEASE_SECONDS", DEFAULT_LEASE_SECONDS)),
+        "heartbeat_seconds": int(
+            os.getenv("BUILD_HEARTBEAT_SECONDS", DEFAULT_HEARTBEAT_SECONDS)
+        ),
+        "max_attempts": int(os.getenv("BUILD_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS)),
+    }
+
+
+def build_worker_for_environment() -> BuildWorker:
+    """The wiring a standalone worker needs, from the same environment the API reads.
+
+    `python -m src.service.worker` calls this. It shares `_redis` and the store
+    and queue choices with `create_app` deliberately: a worker that assembled its
+    own would eventually disagree with the service about where the work is.
+    """
+    client = _redis()
+    store = RedisJobStore(client) if client else InMemoryJobStore()
+    queue = RedisBuildQueue(client) if client else InMemoryBuildQueue()
+    return BuildWorker(store, queue, build_work, **_worker_settings())
 
 
 app = create_app()
