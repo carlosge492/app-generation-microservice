@@ -207,6 +207,8 @@ $EXTRA_DEPS
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  integration_test:
+    sdk: flutter
   flutter_lints: ^4.0.0
 
 flutter:

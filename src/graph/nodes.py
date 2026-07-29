@@ -23,6 +23,7 @@ from src.ports.conformance import check_conformance
 from src.ports.generator import CodeGenerator
 from src.ports.ownership import owner_of, route_for
 from src.ports.runtime import TestRunner
+from src.ports.roundtrip import build_roundtrip_tests
 from src.ports.smoke import build_smoke_tests
 from src.ports.templates import ensure_lint_dependency, repair_pubspec_description
 from src.prd.schema import PRD
@@ -152,6 +153,13 @@ def make_qa_node(analyzer: DartAnalyzer, runner: TestRunner | None = None) -> No
         smoke = build_smoke_tests(_prd(state), files)
         files.update(smoke)
 
+        # Round-trip tests ship with the app but are not run here: they need a
+        # Firestore emulator and a browser, which the analysis loop deliberately
+        # does not depend on. Generating them anyway means the app carries the
+        # one check that catches wire-type bugs, for whoever can run it.
+        roundtrip = build_roundtrip_tests(_prd(state), files)
+        files.update(roundtrip)
+
         # Remove anything we wrote on a previous pass that is no longer part of
         # the app. A repair pass that renames a screen used to leave the old
         # file — and its now-dangling smoke test — on disk, which then failed
@@ -215,7 +223,10 @@ def make_qa_node(analyzer: DartAnalyzer, runner: TestRunner | None = None) -> No
         signature = sorted(f"{d.code}:{d.file}:{d.line}" for d in errors)
         stalled = bool(errors) and signature == state.get("diagnostic_signature")
         note = (
-            f"qa: {len(files)} file(s) analysed ({len(smoke)} smoke test(s)), "
+            f"qa: {len(files)} file(s) analysed "
+            f"({len(smoke)} smoke test(s), "
+            f"{sum(1 for p in roundtrip if p.endswith('_roundtrip_test.dart'))} "
+            f"round-trip test(s)), "
             f"{len(errors)} error(s), "
             f"{len(diagnostics) - len(errors)} non-fatal"
         )

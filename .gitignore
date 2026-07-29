@@ -10,5 +10,5 @@ generated_apps/
 # Throwaway testnet keys. Never reuse on mainnet.
 .x402-testnet.json
 
-# Runtime log from the Firestore emulator, not part of its config.
-emulator/firestore-debug.log
+# Runtime logs from the emulator suite, not part of its config.
+emulator/*-debug.log

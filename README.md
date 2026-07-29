@@ -275,6 +275,8 @@ Honest status, because "it compiles" and "it works" are different claims:
 | The generated app starts at all | `main()` executed in Chrome | ✅ was broken in every app |
 | Real Firestore read/write | emulator + Chrome, generated app | ✅ template generator, web only |
 | Generated date fields survive a round trip | same | ✅ was broken; see below |
+| Every generated app ships a round-trip test | generated from the PRD in the QA phase | ✅ not run in the loop — needs an emulator |
+| That test generator is not template-specific | discovers both generators' serialiser pairs | ✅ `fromSnapshot`/`toMap` and `fromDoc`/`toJson` |
 | Claude output against a live Firestore | — | ❌ prompt warns of the trap, never run |
 | Navigation between screens | — | ❌ still only "the screen builds" |
 | Release build is unsigned, not debug-signed | real `--release` build, `apksigner` | ✅ verified unsigned |
@@ -311,13 +313,32 @@ Dart — always threw the first time an app read a document it had written itsel
 Both fixes are guarded by tests that fail against the old output and pass
 against the new, which is the only reason to trust them.
 
+That guard is no longer hand-written. The QA phase now emits an
+`integration_test/<model>_roundtrip_test.dart` per model, and the emitted test
+was itself checked the same way: it passes against the fixed mapper and fails
+against the old one with the exact `Timestamp is not a subtype of DateTime?`.
+
+It writes through the app's **own** serialiser and reads back through the app's
+**own** deserialiser, which is the only formulation that is not a trap. A
+hand-written document would have to pick a wire format, and the two generators
+disagree on purpose — `TemplateGenerator` stores a date as a `Timestamp`, the
+fixture generator as an ISO-8601 string, and both are correct because each reads
+back what it wrote. Nothing about the pair is hard-coded either: the method
+names are read out of the generated code, because `fromSnapshot`/`toMap` and
+`fromDoc`/`toJson` are the same contract spelled differently, and a check
+written against one generator's spelling silently stops testing the other.
+
+Running it is opt-in. It needs an emulator and a browser, and making the
+analysis loop depend on Node, a JDK 21 and Chrome would be a large tax on every
+build for a check most builds cannot run.
+
 Two limits on that ✅. It ran in **Chrome, not on Android** — this machine has no
 AVD or system image — which is enough for a platform-independent Dart mapper bug
 and not enough to claim the app works on a phone. And it covers the **template
 generator only**: the Claude generator's prompt now documents the same trap, but
 no Opus output has been put in front of a live Firestore.
 
-239 unit tests; eval sweep 11/11 against real analysis and widget tests;
+251 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout
@@ -334,6 +355,7 @@ src/
     analyzer.py        StubAnalyzer (offline) + FlutterAnalyzer (real)
     conformance.py     does the app match the PRD?
     smoke.py           generates widget tests from the output
+    roundtrip.py       generates the Firestore round-trip test from the output
     runtime.py         runs them
     ownership.py       which agent can fix which diagnostic
   payments/x402.py     the payment gate + x402 verifier selection

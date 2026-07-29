@@ -66,106 +66,6 @@ FIRESTORE_PORT = 8080
 CHROMEDRIVER_PORT = 4444
 WEB_PORT = 7365
 
-DRIVER_DART = """import 'package:integration_test/integration_test_driver.dart';
-
-Future<void> main() => integrationDriver();
-"""
-
-# Written against the example PRD's `Observation` model. Generating this per PRD
-# is the obvious next step; it is hand-written here so the claim rests on a test
-# that demonstrably fails against the old mapper rather than on new machinery.
-ROUNDTRIP_DART = """import 'dart:async';
-
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:flutter/widgets.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_test/flutter_test.dart';
-import 'package:integration_test/integration_test.dart';
-
-import 'package:field_notes/providers/observation_providers.dart';
-
-const _emulator = String.fromEnvironment('FIRESTORE_EMULATOR');
-
-void main() {
-  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
-
-  setUpAll(() async {
-    await Firebase.initializeApp(
-      options: const FirebaseOptions(
-        apiKey: 'demo-key',
-        appId: '1:1:web:demo',
-        projectId: '%(project)s',
-        messagingSenderId: '1',
-      ),
-    );
-    final separator = _emulator.lastIndexOf(':');
-    FirebaseFirestore.instance.useFirestoreEmulator(
-      _emulator.substring(0, separator),
-      int.parse(_emulator.substring(separator + 1)),
-    );
-  });
-
-  testWidgets('a write through the generated controller reads back through the generated stream',
-      (tester) async {
-    // Gives the test binding a view; without one the gesture layer throws
-    // "Bad state: No element" on every pointer packet.
-    await tester.pumpWidget(const SizedBox.shrink());
-
-    final container = ProviderContainer();
-    addTearDown(container.dispose);
-
-    final title = 'round trip ${DateTime.now().microsecondsSinceEpoch}';
-    // Whole seconds: Firestore keeps sub-millisecond precision, and comparing
-    // that would make this a test about rounding.
-    final recordedAt = DateTime.fromMillisecondsSinceEpoch(
-      (DateTime.now().millisecondsSinceEpoch ~/ 1000) * 1000,
-    );
-
-    // Observed the way a widget observes it, and subscribed before the write so
-    // the emission carrying it cannot be missed. Errors are forwarded rather
-    // than swallowed: a mapper that throws on a Timestamp shows up here as that
-    // TypeError instead of as a bare timeout.
-    final found = Completer<List<Observation>>();
-    final subscription = container.listen<AsyncValue<List<Observation>>>(
-      observationListProvider,
-      (_, next) {
-        if (found.isCompleted) return;
-        next.when(
-          data: (list) {
-            if (list.any((o) => o.title == title)) found.complete(list);
-          },
-          error: (error, stackTrace) => found.completeError(error, stackTrace),
-          loading: () {},
-        );
-      },
-      fireImmediately: true,
-    );
-    addTearDown(subscription.close);
-
-    final controller = container.read(observationControllerProvider.notifier);
-    controller.createDraft();
-    controller.update('title', title);
-    controller.update('notes', 'written by the integration test');
-    controller.update('count', 3);
-    controller.update('verified', true);
-    controller.update('recordedAt', recordedAt);
-    await controller.submit();
-
-    expect(container.read(observationControllerProvider).hasError, isFalse,
-        reason: 'the write itself failed');
-
-    final observations = await found.future.timeout(const Duration(seconds: 20));
-    final written = observations.firstWhere((o) => o.title == title);
-
-    expect(written.notes, 'written by the integration test');
-    expect(written.count, 3);
-    expect(written.verified, isTrue);
-    // The regression this exists for.
-    expect(written.recordedAt.toUtc(), recordedAt.toUtc());
-  });
-}
-"""
 
 
 def log(message: str) -> None:
@@ -289,58 +189,54 @@ def main() -> int:
             raise SystemExit(f"FAILED: generation failed: {final.get('failure')}")
         log("generated and analysed clean")
 
-        # -- drop in the integration test ----------------------------------- #
-        (build_dir / "integration_test").mkdir(parents=True, exist_ok=True)
-        (build_dir / "test_driver").mkdir(parents=True, exist_ok=True)
-        (build_dir / "integration_test" / "firestore_roundtrip_test.dart").write_text(
-            ROUNDTRIP_DART % {"project": PROJECT_ID}, encoding="utf-8"
-        )
-        (build_dir / "test_driver" / "integration_test.dart").write_text(
-            DRIVER_DART, encoding="utf-8"
-        )
-        pubspec = build_dir / "pubspec.yaml"
-        source = pubspec.read_text(encoding="utf-8")
-        if "integration_test:" not in source:
-            pubspec.write_text(
-                source.replace(
-                    "dev_dependencies:\n",
-                    "dev_dependencies:\n  integration_test:\n    sdk: flutter\n",
-                    1,
-                ),
-                encoding="utf-8",
+        # -- find the test the pipeline generated ---------------------------- #
+        # Nothing is injected here any more. The QA phase emits the round-trip
+        # test, its driver and the pubspec entry, so this script runs exactly
+        # what a buyer receives. A copy kept in this file would drift from the
+        # generated one and quietly start proving something else.
+        targets = sorted((build_dir / "integration_test").glob("*_roundtrip_test.dart"))
+        if not targets:
+            raise SystemExit(
+                "FAILED: the pipeline generated no round-trip test. Either the "
+                "PRD declares no models, or the model's serialiser pair could "
+                "not be found — see src/ports/roundtrip.py."
             )
+        log(f"pipeline generated: {', '.join(t.name for t in targets)}")
 
         # -- run it --------------------------------------------------------- #
         flutter = str(Path(args.flutter_root) / "bin" / "flutter.bat")
         if not Path(flutter).exists():
             flutter = str(Path(args.flutter_root) / "bin" / "flutter")
-        log("running the round trip in Chrome (a couple of minutes)")
-        proc = subprocess.run(
-            [
-                flutter, "drive",
-                "--driver=test_driver/integration_test.dart",
-                "--target=integration_test/firestore_roundtrip_test.dart",
-                "-d", "chrome", "--browser-name=chrome",
-                f"--web-port={WEB_PORT}",
-                f"--dart-define=FIRESTORE_EMULATOR=127.0.0.1:{FIRESTORE_PORT}",
-            ],
-            cwd=str(build_dir), capture_output=True, text=True, check=False,
-            encoding="utf-8", errors="replace",
-        )
-        output = (proc.stdout or "") + (proc.stderr or "")
-        if proc.returncode != 0 or "All tests passed" not in output:
-            interesting = [
-                line for line in output.splitlines()
-                if any(k in line for k in ("TypeError", "Failure in", "Timeout", "Expected", "Actual"))
-            ]
-            raise SystemExit(
-                "FAILED: the round trip did not pass\n" + "\n".join(interesting[:15])
+        for target in targets:
+            log(f"running {target.name} in Chrome (a couple of minutes)")
+            proc = subprocess.run(
+                [
+                    flutter, "drive",
+                    "--driver=test_driver/integration_test.dart",
+                    f"--target=integration_test/{target.name}",
+                    "-d", "chrome", "--browser-name=chrome",
+                    f"--web-port={WEB_PORT}",
+                    f"--dart-define=FIRESTORE_EMULATOR=127.0.0.1:{FIRESTORE_PORT}",
+                ],
+                cwd=str(build_dir), capture_output=True, text=True, check=False,
+                encoding="utf-8", errors="replace",
             )
+            output = (proc.stdout or "") + (proc.stderr or "")
+            if proc.returncode != 0 or "All tests passed" not in output:
+                interesting = [
+                    line for line in output.splitlines()
+                    if any(k in line for k in
+                           ("TypeError", "Failure in", "Timeout", "Expected", "Actual"))
+                ]
+                raise SystemExit(
+                    f"FAILED: {target.name} did not pass\n" + "\n".join(interesting[:15])
+                )
 
         print("\n" + "=" * 61)
         print("PASSED: a generated app wrote to Firestore and read it back.")
-        print("  write     through the generated controller")
-        print("  read      through the generated stream provider")
+        print(f"  ran       {len(targets)} generated round-trip test(s)")
+        print("  write     through the app's own serialiser")
+        print("  read      through the app's own deserialiser")
         print("  checked   text, number, bool and date survived the round trip")
         print("\nThe date is the one that used to throw.")
         return 0
