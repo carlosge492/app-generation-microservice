@@ -165,6 +165,52 @@ def wire_write(name: str, field_type: str) -> str:
     return name
 
 
+def _fab_navigation(screen: Screen) -> str:
+    """The `Navigator` call for a screen's first `navigate` action, if it has one.
+
+    Without this the generated app declared a route for every screen and never
+    pushed one: `/capture` and `/settings` existed in the routes table and no
+    widget could reach them. Every check passed — each screen built in isolation,
+    the routes were valid Dart, and the analyzer has no opinion about whether a
+    route is ever used — so an app whose only way in to the form was unreachable
+    looked completely healthy.
+    """
+    for action in screen.actions:
+        if action.kind == "navigate" and action.target:
+            return (
+                f"\n          Navigator.pushNamed"
+                f"(context, '/{action.target}');"
+            )
+    return ""
+
+
+def _navigation_buttons(screen: Screen, cupertino: bool = False) -> str:
+    """One button per `navigate` action, for screens with no other affordance.
+
+    A list screen has a floating action button to hang navigation off. An auth,
+    settings or detail screen has nothing, so its navigate actions were dropped
+    on the floor — `auth_flow` declared `goToFeed` and `many_screens` declared
+    `backToInbox`, and in both the destination existed in the routes table with
+    no way to reach it.
+
+    The label is the action's own name from the PRD, which the schema has
+    already validated as a Dart identifier, so it needs no escaping.
+    """
+    # `TextButton` is Material-only; a CupertinoApp tree has to use
+    # `CupertinoButton` or the widget is simply not in scope.
+    widget = "CupertinoButton" if cupertino else "TextButton"
+    pad = " " * (16 if cupertino else 14)
+    buttons = [
+        f"{pad}{widget}(\n"
+        f"{pad}  onPressed: () => Navigator.pushNamed(context, '/{a.target}'),\n"
+        f"{pad}  child: const Text('{a.name}'),\n"
+        f"{pad}),"
+        for a in screen.actions
+        if a.kind == "navigate" and a.target
+    ]
+    return "\n".join(buttons)
+
+
 def screen_class(screen: Screen) -> str:
     return f"{pascal(screen.id)}Screen"
 
@@ -335,7 +381,9 @@ class $CLASS extends ConsumerWidget {
         middle: const Text('$TITLE'),
         trailing: CupertinoButton(
           padding: EdgeInsets.zero,
-          onPressed: () => ref.read($CONTROLLER_PROVIDER.notifier).createDraft(),
+          onPressed: () {
+            ref.read($CONTROLLER_PROVIDER.notifier).createDraft();$FAB_NAVIGATE
+          },
           child: const Icon(CupertinoIcons.add),
         ),
       ),
@@ -401,11 +449,17 @@ class $CLASS extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return CupertinoPageScaffold(
       navigationBar: CupertinoNavigationBar(middle: const Text('$TITLE')),
-      child: const SafeArea(
+      child: SafeArea(
         child: Center(
           child: Padding(
-            padding: EdgeInsets.all(24),
-            child: Text('$TITLE'),
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                const Text('$TITLE'),
+$NAV_BUTTONS
+              ],
+            ),
           ),
         ),
       ),
@@ -481,7 +535,9 @@ class $CLASS extends ConsumerWidget {
         error: (error, stackTrace) => Center(child: Text('Failed to load: $error')),
       ),
       floatingActionButton: FloatingActionButton(
-        onPressed: () => ref.read($CONTROLLER_PROVIDER.notifier).createDraft(),
+        onPressed: () {
+          ref.read($CONTROLLER_PROVIDER.notifier).createDraft();$FAB_NAVIGATE
+        },
         child: const Icon(Icons.add),
       ),
     );
@@ -528,10 +584,16 @@ class $CLASS extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
       appBar: AppBar(title: const Text('$TITLE')),
-      body: const Center(
+      body: Center(
         child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Text('$TITLE'),
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              const Text('$TITLE'),
+$NAV_BUTTONS
+            ],
+          ),
         ),
       ),
     );
@@ -721,7 +783,11 @@ class TemplateGenerator:
         cls = screen_class(screen)
         if model is None:
             plain = CUPERTINO_PLAIN_SCREEN if cupertino else PLAIN_SCREEN
-            return plain.safe_substitute(CLASS=cls, TITLE=dart_string(screen.title))
+            return plain.safe_substitute(
+                CLASS=cls,
+                TITLE=dart_string(screen.title),
+                NAV_BUTTONS=_navigation_buttons(screen, cupertino),
+            )
 
         module = snake(model.name) + "_providers"
         if screen.kind == "form":
@@ -761,6 +827,7 @@ class TemplateGenerator:
             LIST_PROVIDER=list_provider(model),
             CONTROLLER_PROVIDER=controller_provider(model),
             PRIMARY_FIELD=primary,
+            FAB_NAVIGATE=_fab_navigation(screen),
         )
 
     # -- logic subagent ----------------------------------------------------- #

@@ -57,11 +57,67 @@ def check_conformance(prd: PRD, files: dict[str, str]) -> list[Diagnostic]:
     out += _check_screens(prd, ui, files)
     out += _check_models(prd, logic)
     out += _check_form_fields(prd, files)
+    out += _check_navigation_reachable(prd, files)
     out += _check_unwired_declarations(files)
     out += _check_pubspec_parses(files)
     out += _check_lint_package_installed(files)
     out += _check_single_entrypoint(files)
     out += _check_duplicate_declarations(files)
+    return out
+
+
+def _check_navigation_reachable(prd: PRD, files: dict[str, str]) -> list[Diagnostic]:
+    """A declared `navigate` action must actually be able to go somewhere.
+
+    The template generator listed every screen in the routes table and never
+    pushed one, so `/capture` and `/settings` existed and nothing could reach
+    them. Nothing caught it: each screen built in isolation, the routes table
+    was valid Dart, and neither the analyzer nor the smoke tests have an opinion
+    about whether a route is ever navigated to. The app was a form nobody could
+    open.
+
+    The check is deliberately loose about *how*. `Navigator.pushNamed(context,
+    '/capture')`, a `MaterialPageRoute` building `CaptureScreen`, or a router's
+    `go('/capture')` are all fine — what it will not accept is the target
+    appearing only in the routes table that declares it, which is the shape the
+    bug had.
+    """
+    out: list[Diagnostic] = []
+    routes_table = {
+        path for path, body in files.items()
+        if path.startswith("lib/ui/") and re.search(r"\broutes\s*:", body)
+    }
+
+    for screen in prd.screens:
+        for action in screen.actions:
+            if action.kind != "navigate" or not action.target:
+                continue
+            slug = snake(action.target)
+            widget = f"{pascal(action.target)}Screen"
+
+            # Somewhere *else* has to do the navigating. Excluded: the routes
+            # table, which only declares the destination, and the destination's
+            # own file — whose `class CaptureScreen` and `const CaptureScreen(`
+            # otherwise match and make every unreachable screen look reachable.
+            declares_target = re.compile(rf"\bclass\s+{re.escape(widget)}\b")
+            reachable_from = "\n".join(
+                body for path, body in files.items()
+                if path.startswith("lib/ui/")
+                and path not in routes_table
+                and not declares_target.search(body)
+            )
+
+            if re.search(rf"""['"]/?{re.escape(slug)}['"]""", reachable_from):
+                continue
+            if re.search(rf"\b{re.escape(widget)}\s*\(", reachable_from):
+                continue
+            out.append(Diagnostic(
+                "error", f"lib/ui/{snake(screen.id)}_screen.dart", 0,
+                "unreachable_screen",
+                f"screen '{screen.id}' declares a navigate action "
+                f"'{action.name}' to '{action.target}', but nothing outside the "
+                f"routes table navigates there — the target is unreachable",
+            ))
     return out
 
 

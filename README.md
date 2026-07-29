@@ -279,7 +279,8 @@ Honest status, because "it compiles" and "it works" are different claims:
 | That test generator is not template-specific | discovers both generators' serialiser pairs | ✅ `fromSnapshot`/`toMap` and `fromDoc`/`toJson` |
 | Claude output against a live Firestore | Opus 5 app, emulator + Chrome | ✅ round trip passes |
 | Discovery works on model code nobody wrote for it | Opus, Haiku, template, fixture | ✅ four serialiser shapes |
-| Navigation between screens | — | ❌ still only "the screen builds" |
+| Declared navigation is actually wired | conformance `unreachable_screen` | ✅ found 3 dead routes |
+| Navigation works at runtime (tap → arrive) | — | ❌ static check only |
 | Release build is unsigned, not debug-signed | real `--release` build, `apksigner` | ✅ verified unsigned |
 | The artifact is signable by the buyer | signed with a throwaway keystore | ✅ verifies against their cert |
 | Play upload | — | ❌ needs a Play account and a listing |
@@ -357,7 +358,38 @@ two call arities. The lesson is the one this repo keeps relearning: a check
 written while looking at a single generator encodes that generator's taste, and
 the only way to find out is to run it against code somebody else wrote.
 
-259 unit tests; eval sweep 11/11 against real analysis and widget tests;
+### The routes nothing could reach
+
+The PRD declares navigation as data — `Action(kind="navigate", target=<screen>)`
+— and the schema already refuses targets that name screens which do not exist.
+The generator listed every one of those screens in the routes table and then
+never pushed a single route. `/capture` and `/settings` existed and no widget
+could get to them: the app was a form nobody could open.
+
+Everything passed. Each screen built in isolation, so the smoke tests were
+green. The routes table was valid Dart, and the analyzer has no opinion about
+whether a route is ever navigated to. Conformance checked that the screens
+existed, which they did.
+
+`unreachable_screen` closes it, and is deliberately loose about *how* a screen is
+reached — a named route, a `MaterialPageRoute` building the widget, or a
+router's `go()` all count. What it will not accept is the target appearing only
+in the routes table that declares it, which is exactly the shape the bug had.
+
+Two things worth recording. The first version of the check was **vacuous**: it
+searched every UI file for `CaptureScreen(` and found the destination's own
+constructor in its own file, so every unreachable screen looked reachable. It
+was caught by running it against the actual broken output rather than a fixture.
+And once it worked it immediately found two more instances nobody had looked
+for — `auth_flow` and `many_screens` — because the fix had only covered list
+screens, and auth, settings and detail screens had no affordance to hang
+navigation off at all.
+
+This is a **static** guarantee: something in the app navigates to every declared
+target. It is not proof that a user tapping the button arrives, which needs the
+emulator-and-Chrome path the Firestore round trip uses.
+
+266 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout
