@@ -237,7 +237,12 @@ def make_qa_node(analyzer: DartAnalyzer, runner: TestRunner | None = None) -> No
     return qa
 
 
-def make_packaging_node(dry_run: bool, flutter_root: str | None = None) -> Node:
+def make_packaging_node(
+    dry_run: bool,
+    flutter_root: str | None = None,
+    build_mode: str = "debug",
+    sdk_root: str | None = None,
+) -> Node:
     def packaging(state: BuildState) -> dict[str, Any]:
         try:
             result = run_build(
@@ -246,6 +251,8 @@ def make_packaging_node(dry_run: bool, flutter_root: str | None = None) -> Node:
                 prd=_prd(state),
                 flutter_root=flutter_root,
                 dry_run=dry_run,
+                build_mode=build_mode,
+                sdk_root=sdk_root,
             )
         except PaymentNotVerified as exc:
             # Not a build failure: the code is green, it just isn't paid for.

@@ -38,6 +38,8 @@ def build_graph(
     dry_run: bool = True,
     test_runner=None,
     flutter_root: str | None = None,
+    build_mode: str = "debug",
+    sdk_root: str | None = None,
 ):
     graph = StateGraph(BuildState)
 
@@ -45,7 +47,9 @@ def build_graph(
     graph.add_node("genui", make_genui_node(generator))
     graph.add_node("logic", make_logic_node(generator))
     graph.add_node("qa", make_qa_node(analyzer, test_runner))
-    graph.add_node("package", make_packaging_node(dry_run, flutter_root))
+    graph.add_node(
+        "package", make_packaging_node(dry_run, flutter_root, build_mode, sdk_root)
+    )
 
     graph.add_edge(START, "plan")
     graph.add_edge("plan", "genui")

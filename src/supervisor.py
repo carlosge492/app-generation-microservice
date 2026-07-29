@@ -47,8 +47,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-tests", action="store_true",
                         help="also run the generated widget smoke tests "
                              "(requires the Flutter SDK)")
+    parser.add_argument("--sdk-root",
+                        default=os.getenv("ANDROID_SDK_ROOT") or os.getenv("ANDROID_HOME"),
+                        help="Android SDK root; release builds need its apksigner to "
+                             "prove the artifact is unsigned, and refuse to ship without it")
+    parser.add_argument("--build-mode", choices=["debug", "release"], default="debug",
+                        help="release strips the template's debug signing config and "
+                             "emits an unsigned APK for you to sign yourself")
     parser.add_argument("--execute", action="store_true",
-                        help="actually invoke fastlane (requires x402_payment_verified)")
+                        help="actually run the packaging step "
+                             "(requires x402_payment_verified)")
     parser.add_argument("--clean", action="store_true",
                         help="wipe the build directory first")
     return parser.parse_args(argv)
@@ -94,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         test_runner=FlutterTestRunner(args.flutter_root) if args.run_tests else None,
         dry_run=not args.execute,
         flutter_root=args.flutter_root,
+        build_mode=args.build_mode,
+        sdk_root=args.sdk_root,
     )
 
     print(f"PRD      : {args.prd}  ({prd.app_name})")

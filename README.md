@@ -152,6 +152,41 @@ down a process at a time.
 the job store are both shared — a Redis queue over an in-memory job store loses
 the record the build would be resumed from.
 
+### Release builds, and why the service will not sign them
+
+`flutter create` scaffolds a release build type that signs with the **debug**
+key, under a `// TODO: Add your own signing config` comment. Left alone,
+`flutter build apk --release` succeeds, produces a plausible `app-release.apk`,
+installs on a device, and cannot be published — Play rejects the debug key. A
+buyer would find that out at upload, having already paid.
+
+So `--build-mode release` strips that config and emits an **unsigned** APK.
+
+```bash
+poetry run python src/supervisor.py <prd.json> --execute \
+  --build-mode release --flutter-root "C:\flutter" --sdk-root "C:\Android"
+```
+
+The service does not sign, and holds no keys. A release key decides who can ship
+updates to an app's installed base; holding buyers' keys would mean holding that
+power over every app ever generated here, and one breach would compromise all of
+them together. The buyer signs with a key this service never sees:
+
+```bash
+zipalign -p -f 4 app-release-unsigned.apk app-release.apk
+apksigner sign --ks my-release-key.jks --ks-key-alias mykey app-release.apk
+apksigner verify --print-certs app-release.apk
+```
+
+Two details worth knowing. The Gradle edit is **best-effort and not the
+guarantee** — pattern-matching a template that changes between Flutter versions
+is not something to stake a security property on — so the pipeline then inspects
+the APK that actually came out and *fails* rather than hand over a release build
+it cannot show to be unsigned. That check needs `apksigner`, so release builds
+require `--sdk-root` or `ANDROID_SDK_ROOT`; without it the state is `unknown`,
+and unknown is refused, because guessing in the reassuring direction is how a
+debug-signed APK reaches a buyer labelled as a release build.
+
 ## Commands
 
 | What | Command |
@@ -163,10 +198,12 @@ the record the build would be resumed from.
 | Unit tests | `poetry run pytest` |
 | Build worker (pulls from the queue) | `poetry run python -m src.service.worker` |
 | Prove a build survives a killed worker | `poetry run python scripts/verify_durable_execution.py` |
+| Prove a release APK is unsigned and signable | `poetry run python scripts/verify_release_signing.py` |
 | Check the x402 payer is funded | `poetry run python scripts/check_x402_funding.py` |
 
 Useful flags: `--generator {template,claude}`, `--analyzer {stub,dart}`,
-`--max-repairs N`, `--build-dir PATH`, `--clean`, `--execute`.
+`--max-repairs N`, `--build-dir PATH`, `--clean`, `--execute`,
+`--build-mode {debug,release}`, `--sdk-root PATH`.
 
 Poetry may not be on `PATH`; `python -m poetry ...` works either way. The Flutter
 SDK is deliberately not on `PATH` — pass `--flutter-root` or set `$FLUTTER_ROOT`.
@@ -235,7 +272,9 @@ Honest status, because "it compiles" and "it works" are different claims:
 | APK packaging (template) | `flutter build apk --debug` | ✅ correct applicationId |
 | APK packaging (Opus output) | `flutter build apk --debug` | ✅ 145 MB, x402-gated |
 | Navigation / real Firestore I/O | — | ❌ needs an emulator |
-| Release signing / Play upload | — | ❌ debug keystore only |
+| Release build is unsigned, not debug-signed | real `--release` build, `apksigner` | ✅ verified unsigned |
+| The artifact is signable by the buyer | signed with a throwaway keystore | ✅ verifies against their cert |
+| Play upload | — | ❌ needs a Play account and a listing |
 
 One caveat on the two Redis rows, since "✅" is doing real work there. There is
 no Redis daemon on the development machine, so both were verified against
@@ -245,7 +284,7 @@ boundaries, the sockets and the `SIGKILL` are genuine; the server implementing
 `LMOVE` and key expiry is not. Running `scripts/verify_durable_execution.py`
 against a real Redis is a `REDIS_URL` away and has not been done.
 
-211 unit tests; eval sweep 11/11 against real analysis and widget tests;
+229 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout
@@ -273,6 +312,7 @@ src/
     queue.py           reliable queue: atomic reserve, leases, requeue
     worker.py          pull-based workers; heartbeats and bounded retries
   build/pipeline.py    APK packaging (x402-gated)
+  build/signing.py     unsigned release builds, and proving they are unsigned
   build/scaffold.py    generates android/ via `flutter create`
 evals/
   prds/                10 PRDs chosen to break things

@@ -76,6 +76,10 @@ def _settings() -> dict[str, Any]:
         "flutter_root": os.getenv("FLUTTER_ROOT"),
         "max_repairs": int(os.getenv("SUPERVISOR_MAX_REPAIRS", "3")),
         "run_tests": os.getenv("SUPERVISOR_RUN_TESTS", "1") != "0",
+        # Release emits an unsigned APK the buyer signs themselves; see
+        # src/build/signing.py for why the service holds no keys.
+        "build_mode": os.getenv("SUPERVISOR_BUILD_MODE", "debug"),
+        "sdk_root": os.getenv("ANDROID_SDK_ROOT") or os.getenv("ANDROID_HOME"),
     }
 
 
@@ -214,6 +218,9 @@ def create_app(
             "ok": True,
             "generator": settings["generator"],
             "analyzer": settings["analyzer"],
+            # A buyer should be able to tell whether they are getting a debug
+            # artifact or an unsigned release one before they pay for it.
+            "build_mode": settings["build_mode"],
             # Surfaced because a deployment with no secret refuses every
             # payment, and that should be diagnosable without reading logs.
             "payment_configured": app.state.payment_mode not in {"none"},
@@ -376,6 +383,8 @@ def build_work(job: BuildJob):
             ),
             dry_run=False,
             flutter_root=settings["flutter_root"],
+            build_mode=settings["build_mode"],
+            sdk_root=settings["sdk_root"],
         )
         build_dir = Path(job.build_dir)
         build_dir.mkdir(parents=True, exist_ok=True)
