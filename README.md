@@ -25,6 +25,25 @@ To grade the output with the real toolchain instead of the offline stub:
 poetry run python src/supervisor.py --clean --analyzer dart --flutter-root "C:\flutter" --run-tests
 ```
 
+## As a service
+
+CLAUDE.md calls this an M2M microservice; this is the part a machine buyer calls.
+
+```bash
+X402_SHARED_SECRET=... FLUTTER_ROOT="C:\flutter"   poetry run uvicorn src.service.app:app --port 8000
+```
+
+| Endpoint | |
+| --- | --- |
+| `POST /builds` | PRD in; `202` + job id, or `402` with an x402 challenge |
+| `GET /builds/{id}` | status, log, diagnostics |
+| `GET /builds/{id}/apk` | the artifact |
+| `GET /healthz` | includes whether payment is configured |
+
+Builds take minutes, so the API is asynchronous. **`x402_payment_verified` in a
+submitted PRD is discarded**: the PRD is buyer-supplied, so trusting that field
+would let anyone assert their own payment. Only the server's verifier sets it.
+
 ## Commands
 
 | What | Command |
@@ -89,6 +108,8 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Screens actually build at runtime | generated widget smoke tests | ✅ |
 | Repair loop recovers honestly | fault injection | ✅ |
 | x402 gate | unit tests | ✅ |
+| HTTP service, end to end | live server, PRD → APK download | ✅ |
+| Buyer cannot self-certify payment | forged flag → 402 | ✅ |
 | Claude generator — request shape | fake transport, 18 tests | ✅ |
 | Harness works on non-template code | `--generator fixture` | ✅ full pipeline + APK path |
 | Claude generator (Opus 5) | full eval sweep | ✅ 11/11 |
@@ -97,7 +118,7 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Navigation / real Firestore I/O | — | ❌ needs an emulator |
 | Release signing / Play upload | — | ❌ debug keystore only |
 
-117 unit tests; eval sweep 11/11 against real analysis and widget tests;
+130 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout
@@ -116,7 +137,8 @@ src/
     smoke.py           generates widget tests from the output
     runtime.py         runs them
     ownership.py       which agent can fix which diagnostic
-  payments/x402.py     the payment gate
+  payments/x402.py     the payment gate + HTTP payment verifier
+  service/             FastAPI app and the async job store
   build/pipeline.py    APK packaging (x402-gated)
   build/scaffold.py    generates android/ via `flutter create`
 evals/
