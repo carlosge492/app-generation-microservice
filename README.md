@@ -77,6 +77,29 @@ recording that the buyer may have been charged. Retrying a transport failure is
 safe — an EIP-3009 nonce is single-use on-chain, so a duplicate submission
 reverts rather than charging twice.
 
+### A working testnet configuration
+
+Verified end to end on Base Sepolia — a real transaction, a real APK:
+
+```bash
+export X402_TOKEN_CONTRACT=0x036CbD53842c5426634e7929541eC2318f3dCF7e  # USDC
+export X402_CHAIN_ID=84532
+export X402_NETWORK=base-sepolia
+export X402_PRICE_ATOMIC=500000                                       # 0.50 USDC
+export X402_PAY_TO=0xYourReceivingAddress
+export X402_FACILITATOR_URL=https://facilitator.payai.network         # public, no auth
+export FLUTTER_ROOT="C:\flutter"
+poetry run uvicorn src.service.app:app --port 8000
+```
+
+The payer needs USDC only — **no ETH**. The facilitator submits the transaction
+and pays gas, which is the point of EIP-3009; if a wallet is being asked for
+testnet ETH, something is wired wrong. Faucet: <https://faucet.circle.com>.
+
+`scripts/check_x402_funding.py` reports whether a payer is funded by asking the
+facilitator's `/verify`, rather than introducing a second source of truth that
+could disagree with the one the gate actually uses.
+
 ### Running more than one worker
 
 Set `REDIS_URL` and both the nonce store and the job store move to Redis;
