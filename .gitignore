@@ -6,3 +6,6 @@ __pycache__/
 
 # Agent output — build artifacts, not source
 generated_apps/
+
+# Throwaway testnet keys. Never reuse on mainnet.
+.x402-testnet.json

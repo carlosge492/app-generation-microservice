@@ -157,7 +157,8 @@ Honest status, because "it compiles" and "it works" are different claims:
 | EIP-712/EIP-3009 signature verification | real keys, 28 tests | ✅ |
 | Replay protection | atomic claim, concurrent race test | ✅ |
 | Facilitator wire format | live `facilitator.payai.network` | ✅ payload accepted, payer recovered |
-| Settlement success path | — | ❌ needs a funded testnet wallet |
+| On-chain settlement | live, Base Sepolia | ✅ real tx, ~1.2s |
+| Replay refused on-chain | store bypassed | ✅ `duplicate_settlement` |
 | Multi-process replay safety | 2 uvicorn workers, shared Redis | ✅ replay refused across processes |
 | Durable build execution | — | ❌ in-process; a restart loses in-flight builds |
 | HTTP service, end to end | live server, PRD → APK download | ✅ |
