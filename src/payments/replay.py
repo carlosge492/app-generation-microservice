@@ -22,9 +22,12 @@ concurrency-control one.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
-from typing import Protocol
+from typing import Any, Protocol
+
+log = logging.getLogger(__name__)
 
 
 class NonceStore(Protocol):
@@ -78,3 +81,62 @@ class InMemoryNonceStore:
     def __len__(self) -> int:
         with self._lock:
             return len(self._claimed)
+
+
+class RedisNonceStore:
+    """Replay protection shared across processes.
+
+    `SET key value NX EX ttl` is a single round trip that Redis executes
+    atomically, and it returns whether *this* caller created the key. That is
+    exactly the property the in-memory lock provided, now holding across
+    uvicorn workers and hosts rather than within one interpreter — a
+    check-then-set pair of commands would reintroduce the race the lock existed
+    to close.
+
+    The TTL is the authorization's own `validBefore`. Expiring earlier would
+    reopen the replay window; expiring later would only waste memory, since a
+    lapsed authorization is refused on its own merits during verification.
+
+    A Redis outage refuses payment. Returning True when the store is unreachable
+    would turn an infrastructure blip into an unbounded replay window, which is
+    a far worse failure than rejecting some honest requests.
+    """
+
+    def __init__(self, client: Any, prefix: str = "x402:nonce:", grace: int = 60) -> None:
+        self._redis = client
+        self._prefix = prefix
+        # A little past expiry, so clock skew between us and the chain cannot
+        # let a still-valid authorization outlive its own claim.
+        self._grace = grace
+
+    def _key(self, key: str) -> str:
+        return f"{self._prefix}{key}"
+
+    def claim(self, key: str, expires_at: int) -> bool:
+        # Expiry is judged before the grace period is added, or a lapsed
+        # authorization would be claimable for another `grace` seconds. The
+        # grace exists to make a live claim outlive its authorization, not to
+        # extend the authorization itself.
+        remaining = int(expires_at - time.time())
+        if remaining <= 0:
+            # Verification should already have rejected this. Refuse anyway.
+            return False
+        ttl = remaining + self._grace
+        try:
+            created = self._redis.set(
+                self._key(key), str(int(time.time())), nx=True, ex=ttl
+            )
+        except Exception:  # noqa: BLE001 - any client error must fail closed
+            log.exception("nonce store unavailable; refusing payment")
+            return False
+        return bool(created)
+
+    def seen(self, key: str) -> bool:
+        try:
+            return bool(self._redis.exists(self._key(key)))
+        except Exception:  # noqa: BLE001
+            log.exception("nonce store unavailable")
+            # Unknown is reported as seen: the caller uses this for diagnostics,
+            # and claiming ignorance of a nonce we cannot check is the unsafe
+            # direction to guess in.
+            return True

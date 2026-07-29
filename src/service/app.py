@@ -41,7 +41,17 @@ from src.ports.analyzer import get_analyzer
 from src.ports.generator import get_generator
 from src.ports.runtime import FlutterTestRunner
 from src.prd.schema import PRD
-from src.service.jobs import BuildJob, BuildStatus, JobStore
+from src.payments.facilitator import HttpFacilitator
+from src.payments.replay import InMemoryNonceStore, RedisNonceStore
+from src.service.jobs import (
+    BuildJob,
+    BuildRunner,
+    BuildStatus,
+    InMemoryJobStore,
+    JobStore,
+    RedisJobStore,
+    reap_stale,
+)
 
 BUILD_ROOT = Path(os.getenv("BUILD_ROOT", "generated_apps/service"))
 
@@ -70,6 +80,21 @@ class RefusingVerifier:
         return False
 
 
+def _redis():
+    """A Redis client, or None. Never a silent fallback for the nonce store.
+
+    Falling back to in-memory replay protection when Redis is missing would
+    quietly reintroduce the cross-process hole this exists to close, so the
+    caller decides what a missing client means — and for nonces it means refuse.
+    """
+    url = os.getenv("REDIS_URL")
+    if not url:
+        return None
+    import redis  # imported lazily so the CLI never needs it
+
+    return redis.Redis.from_url(url, decode_responses=True)
+
+
 def _token_from_env() -> TokenConfig | None:
     contract = os.getenv("X402_TOKEN_CONTRACT")
     chain_id = os.getenv("X402_CHAIN_ID")
@@ -93,12 +118,26 @@ def _verifier_from_env() -> tuple[PaymentVerifier, str, TokenConfig | None]:
     token = _token_from_env()
     pay_to = os.getenv("X402_PAY_TO")
     if token is not None and pay_to:
+        price = int(os.getenv("X402_PRICE_ATOMIC", "500000"))
+        client = _redis()
+        facilitator_url = os.getenv("X402_FACILITATOR_URL")
         return (
             X402Verifier(
                 token=token,
                 pay_to=pay_to,
-                min_value=int(os.getenv("X402_PRICE_ATOMIC", "500000")),
+                min_value=price,
                 clock_skew=int(os.getenv("X402_CLOCK_SKEW", "0")),
+                nonces=(
+                    RedisNonceStore(client) if client is not None
+                    else InMemoryNonceStore()
+                ),
+                facilitator=(
+                    HttpFacilitator(
+                        facilitator_url, token, pay_to, price,
+                        api_key=os.getenv("X402_FACILITATOR_KEY"),
+                        timeout=float(os.getenv("X402_SETTLE_TIMEOUT", "60")),
+                    ) if facilitator_url else None
+                ),
             ),
             "x402-eip3009",
             token,
@@ -123,7 +162,15 @@ def create_app(
     app.state.token = token
     app.state.pay_to = os.getenv("X402_PAY_TO")
     app.state.price_atomic = int(os.getenv("X402_PRICE_ATOMIC", "500000"))
-    app.state.store = store or JobStore()
+
+    if store is not None:
+        app.state.store = store
+        app.state.store_backend = "injected"
+    else:
+        client = _redis()
+        app.state.store = RedisJobStore(client) if client else InMemoryJobStore()
+        app.state.store_backend = "redis" if client else "in-memory"
+    app.state.runner = BuildRunner(app.state.store)
 
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
@@ -144,6 +191,12 @@ def create_app(
                 else "verification-only"
             ),
             "network": app.state.token.network if app.state.token else None,
+            "job_store": app.state.store_backend,
+            # In-memory anything is single-process. Saying so here is cheaper
+            # than someone discovering it from a duplicated build.
+            "multi_process_safe": (
+                app.state.store_backend == "redis" and bool(os.getenv("REDIS_URL"))
+            ),
         }
 
     @app.post("/builds", status_code=202)
@@ -174,7 +227,9 @@ def create_app(
         store: JobStore = request.app.state.store
         job = store.create(prd.app_name)
         job.build_dir = str(BUILD_ROOT / job.id)
-        store.submit(job, _make_runner(prd))
+        job.settlement_tx = getattr(request.app.state.verifier, "last_transaction", None)
+        store.save(job)
+        request.app.state.runner.submit(job, _make_runner(prd))
         return JSONResponse(
             status_code=202,
             content={"id": job.id, "status": job.status.value},
@@ -186,7 +241,8 @@ def create_app(
         job = request.app.state.store.get(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="no such build")
-        return job.public()
+        # A job whose worker died would otherwise report `running` for ever.
+        return reap_stale(request.app.state.store, job).public()
 
     @app.get("/builds/{job_id}/apk")
     def get_apk(job_id: str, request: Request) -> FileResponse:

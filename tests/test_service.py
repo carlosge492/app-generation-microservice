@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from src.payments.x402 import PAYMENT_HEADER, DevPaymentVerifier
 from src.service.app import _verified_prd, create_app
-from src.service.jobs import BuildStatus, JobStore
+from src.service.jobs import BuildRunner, BuildStatus, InMemoryJobStore
 from src.prd.schema import load_prd
 
 SECRET = "test-secret"
@@ -28,7 +28,7 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setenv("SUPERVISOR_ANALYZER", "stub")
     monkeypatch.setenv("SUPERVISOR_RUN_TESTS", "0")
     monkeypatch.setattr("src.service.app.BUILD_ROOT", tmp_path)
-    return TestClient(create_app(verifier=DevPaymentVerifier(SECRET), store=JobStore()))
+    return TestClient(create_app(verifier=DevPaymentVerifier(SECRET), store=InMemoryJobStore()))
 
 
 def _wait(client, job_id, timeout=30.0):
@@ -122,7 +122,7 @@ def test_unknown_build_is_404(client):
 
 def test_apk_is_409_while_the_build_is_unfinished(client):
     """The build exists; it simply has no artifact yet. That is not a 404."""
-    store = JobStore()
+    store = InMemoryJobStore()
     job = store.create("Pending")
     app = create_app(verifier=DevPaymentVerifier(SECRET), store=store)
 
@@ -200,13 +200,14 @@ def test_challenge_tells_the_buyer_how_to_pay(monkeypatch):
 
 
 def test_a_crashing_build_never_stays_running():
-    store = JobStore()
+    store = InMemoryJobStore()
+    runner = BuildRunner(store)
     job = store.create("Boom")
 
     def explode(_job):
         raise RuntimeError("gradle fell over")
 
-    store.submit(job, explode)
+    runner.submit(job, explode)
     deadline = time.time() + 5
     while job.status is not BuildStatus.FAILED and time.time() < deadline:
         time.sleep(0.02)
@@ -216,9 +217,10 @@ def test_a_crashing_build_never_stays_running():
 
 
 def test_work_that_reports_no_outcome_is_treated_as_failure():
-    store = JobStore()
+    store = InMemoryJobStore()
+    runner = BuildRunner(store)
     job = store.create("Silent")
-    store.submit(job, lambda _job: None)
+    runner.submit(job, lambda _job: None)
 
     deadline = time.time() + 5
     while job.status is BuildStatus.QUEUED or job.status is BuildStatus.RUNNING:

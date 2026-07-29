@@ -59,9 +59,31 @@ mode is active.
 
 **Verification is not settlement.** A valid signature proves the payer
 *authorised* a transfer; it does not prove they hold the balance or that the
-transfer landed on-chain. Submitting the authorization needs a facilitator —
-until one is configured, `/healthz` reports `settlement: verification-only`, and
-the service is accepting signed promises.
+transfer landed on-chain. Set `X402_FACILITATOR_URL` and the service submits the
+authorization for on-chain execution and blocks the `202` until it confirms —
+so a build only starts once the money has actually moved. Without it,
+`/healthz` reports `settlement: verification-only` and the service is accepting
+signed promises.
+
+Settlement distinguishes three outcomes, not two. A refusal ("insufficient
+funds") is definite and is not retried. A timeout is *unknown*: the facilitator
+may have broadcast and failed to answer, so the build is refused while
+recording that the buyer may have been charged. Retrying a transport failure is
+safe — an EIP-3009 nonce is single-use on-chain, so a duplicate submission
+reverts rather than charging twice.
+
+### Running more than one worker
+
+Set `REDIS_URL` and both the nonce store and the job store move to Redis;
+`/healthz` reports `multi_process_safe`. Nonce consumption uses `SET NX EX`,
+one atomic round trip, so the time-of-check/time-of-use protection holds across
+workers rather than only within one interpreter. A Redis outage refuses payment
+rather than allowing replays.
+
+Job *state* is shared, but job *execution* is not: the accepting worker runs the
+build in its own thread pool. Restart that worker and the build is lost —
+`reap_stale` fails such jobs rather than leaving them reporting `running` for
+ever. Durable execution needs a queue and pull-based workers.
 
 ## Commands
 
@@ -129,7 +151,9 @@ Honest status, because "it compiles" and "it works" are different claims:
 | x402 gate | unit tests | ✅ |
 | EIP-712/EIP-3009 signature verification | real keys, 28 tests | ✅ |
 | Replay protection | atomic claim, concurrent race test | ✅ |
-| On-chain settlement | — | ❌ needs a facilitator |
+| On-chain settlement | facilitator client, mocked transport | ✅ code path; ❌ never run against a live facilitator |
+| Multi-process replay safety | 2 uvicorn workers, shared Redis | ✅ replay refused across processes |
+| Durable build execution | — | ❌ in-process; a restart loses in-flight builds |
 | HTTP service, end to end | live server, PRD → APK download | ✅ |
 | Buyer cannot self-certify payment | forged flag → 402 | ✅ |
 | Claude generator — request shape | fake transport, 18 tests | ✅ |
@@ -140,7 +164,7 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Navigation / real Firestore I/O | — | ❌ needs an emulator |
 | Release signing / Play upload | — | ❌ debug keystore only |
 
-160 unit tests; eval sweep 11/11 against real analysis and widget tests;
+187 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout
