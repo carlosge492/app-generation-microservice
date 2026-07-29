@@ -60,6 +60,20 @@ class SettlementResult:
         return self.settled and not self.unknown
 
 
+@dataclass(frozen=True)
+class PrecheckResult:
+    """Whether the facilitator believes this authorization would settle.
+
+    Advisory. A balance can change between the check and the settlement, so a
+    positive answer is not a guarantee — it only means nothing is obviously
+    wrong, which is enough to justify spending the nonce.
+    """
+
+    valid: bool
+    unknown: bool = False
+    reason: str | None = None
+
+
 def payment_requirements(
     token: TokenConfig, pay_to: str, price_atomic: int, resource: str = "/builds"
 ) -> dict[str, Any]:
@@ -116,8 +130,49 @@ class HttpFacilitator:
 
     # -- protocol ----------------------------------------------------------- #
 
-    def settle(self, payment: VerifiedPayment) -> SettlementResult:
-        body = {
+    def precheck(self, payment: VerifiedPayment) -> PrecheckResult:
+        """Ask the facilitator whether this would settle, without settling it.
+
+        Run before the nonce is claimed, and that ordering is the entire point.
+        Insufficient funds is a recoverable condition — the payer tops up and
+        presents the same authorization again — but claiming the nonce first
+        would burn it permanently for a payment that never happened. The local
+        checks cannot see a balance; only the facilitator can.
+
+        A negative answer here is advisory, not authoritative: the balance can
+        change between this call and settlement. It exists to avoid destroying
+        an authorization needlessly, not to replace the settle result.
+        """
+        try:
+            response = self._client.post(
+                f"{self.base_url}/verify",
+                json=self._body(payment),
+                headers=self._headers,
+            )
+        except httpx.HTTPError as exc:
+            return PrecheckResult(False, unknown=True, reason=f"transport: {exc}")
+
+        if response.status_code >= 400:
+            return PrecheckResult(
+                False, unknown=True, reason=f"facilitator {response.status_code}"
+            )
+        try:
+            body = response.json()
+        except ValueError:
+            return PrecheckResult(False, unknown=True, reason="unreadable response")
+        if not isinstance(body, dict):
+            return PrecheckResult(False, unknown=True, reason="response was not an object")
+
+        if body.get("isValid") is True:
+            return PrecheckResult(True)
+        if body.get("isValid") is False:
+            return PrecheckResult(
+                False, reason=str(body.get("invalidReason") or "facilitator refused")
+            )
+        return PrecheckResult(False, unknown=True, reason="response did not state validity")
+
+    def _body(self, payment: VerifiedPayment) -> dict[str, Any]:
+        return {
             "x402Version": 1,
             "paymentPayload": payment.payload,
             "paymentRequirements": payment_requirements(
@@ -125,6 +180,8 @@ class HttpFacilitator:
             ),
         }
 
+    def settle(self, payment: VerifiedPayment) -> SettlementResult:
+        body = self._body(payment)
         last: SettlementResult | None = None
         for attempt in range(self.retries + 1):
             try:

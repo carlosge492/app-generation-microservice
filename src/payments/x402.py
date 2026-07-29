@@ -10,7 +10,7 @@ from __future__ import annotations
 import secrets
 from typing import Any, Protocol
 
-from src.payments.facilitator import SettlementResult
+from src.payments.facilitator import PrecheckResult, SettlementResult
 from src.payments.eip3009 import (
     PaymentInvalid,
     TokenConfig,
@@ -73,6 +73,8 @@ class Facilitator(Protocol):
 
     def settle(self, payment: VerifiedPayment) -> SettlementResult: ...
 
+    def precheck(self, payment: VerifiedPayment) -> PrecheckResult: ...
+
 
 class UnsettledFacilitator:
     """Records authorizations without submitting them.
@@ -93,6 +95,10 @@ class UnsettledFacilitator:
         return SettlementResult(
             settled=True, reason="verification-only: not submitted on-chain"
         )
+
+    def precheck(self, payment: VerifiedPayment) -> PrecheckResult:
+        # Nothing to ask; there is no chain in this mode.
+        return PrecheckResult(True)
 
 
 class X402Verifier:
@@ -146,6 +152,20 @@ class X402Verifier:
         except PaymentInvalid as exc:
             self.last_error = str(exc)
             return False
+
+        # Ask the facilitator before spending the nonce. Insufficient funds is
+        # recoverable — the payer tops up and re-presents the same signature —
+        # so burning their authorization for it would be needlessly destructive.
+        precheck = getattr(self.facilitator, "precheck", None)
+        if precheck is not None:
+            advice = precheck(payment)
+            if not advice.valid:
+                self.last_error = (
+                    f"payment could not be confirmed: {advice.reason}"
+                    if not advice.unknown
+                    else f"could not reach the facilitator ({advice.reason})"
+                )
+                return False
 
         auth = payment.authorization
         if not self.nonces.claim(auth.replay_key(self.token), auth.valid_before):

@@ -65,6 +65,11 @@ so a build only starts once the money has actually moved. Without it,
 `/healthz` reports `settlement: verification-only` and the service is accepting
 signed promises.
 
+Before the nonce is claimed the service asks the facilitator's `/verify`
+endpoint whether the payment would settle. Insufficient funds is recoverable —
+the payer tops up and re-presents the same signature — so burning their
+authorization for it would be needlessly destructive.
+
 Settlement distinguishes three outcomes, not two. A refusal ("insufficient
 funds") is definite and is not retried. A timeout is *unknown*: the facilitator
 may have broadcast and failed to answer, so the build is refused while
@@ -151,7 +156,8 @@ Honest status, because "it compiles" and "it works" are different claims:
 | x402 gate | unit tests | ✅ |
 | EIP-712/EIP-3009 signature verification | real keys, 28 tests | ✅ |
 | Replay protection | atomic claim, concurrent race test | ✅ |
-| On-chain settlement | facilitator client, mocked transport | ✅ code path; ❌ never run against a live facilitator |
+| Facilitator wire format | live `facilitator.payai.network` | ✅ payload accepted, payer recovered |
+| Settlement success path | — | ❌ needs a funded testnet wallet |
 | Multi-process replay safety | 2 uvicorn workers, shared Redis | ✅ replay refused across processes |
 | Durable build execution | — | ❌ in-process; a restart loses in-flight builds |
 | HTTP service, end to end | live server, PRD → APK download | ✅ |
@@ -164,7 +170,7 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Navigation / real Firestore I/O | — | ❌ needs an emulator |
 | Release signing / Play upload | — | ❌ debug keystore only |
 
-187 unit tests; eval sweep 11/11 against real analysis and widget tests;
+192 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout

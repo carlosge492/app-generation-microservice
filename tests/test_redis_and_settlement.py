@@ -16,7 +16,12 @@ import httpx
 import pytest
 
 from src.payments.eip3009 import TokenConfig
-from src.payments.facilitator import HttpFacilitator, SettlementResult, payment_requirements
+from src.payments.facilitator import (
+    HttpFacilitator,
+    PrecheckResult,
+    SettlementResult,
+    payment_requirements,
+)
 from src.payments.replay import InMemoryNonceStore, RedisNonceStore
 from src.service.jobs import (
     BuildJob,
@@ -368,6 +373,46 @@ def test_settle_returns_the_receipt_not_just_a_bool():
     result = _facilitator(handler).settle(_Payment())
     assert result.ok is True
     assert result.transaction == "0xreceipt"
+
+
+def test_precheck_reads_isvalid_from_the_verify_endpoint():
+    """Confirmed against the live PayAI facilitator: /verify answers
+    {"isValid": false, "invalidReason": "..."} for an unfunded payer."""
+    def handler(request):
+        assert request.url.path == "/verify"
+        return httpx.Response(200, json={
+            "isValid": False,
+            "invalidReason": "invalid_exact_evm_insufficient_balance",
+            "payer": "0xabc",
+        })
+
+    result = _facilitator(handler).precheck(_Payment())
+    assert result.valid is False
+    assert result.unknown is False
+    assert "insufficient_balance" in result.reason
+
+
+def test_precheck_accepts_a_valid_authorization():
+    def handler(request):
+        return httpx.Response(200, json={"isValid": True, "payer": "0xabc"})
+
+    assert _facilitator(handler).precheck(_Payment()).valid is True
+
+
+def test_precheck_failure_is_unknown_when_the_facilitator_is_unreachable():
+    def handler(request):
+        raise httpx.ConnectError("no route", request=request)
+
+    result = _facilitator(handler).precheck(_Payment())
+    assert result.valid is False
+    assert result.unknown is True
+
+
+def test_precheck_ambiguity_is_not_treated_as_valid():
+    def handler(request):
+        return httpx.Response(200, json={"probably": "fine"})
+
+    assert _facilitator(handler).precheck(_Payment()).valid is False
 
 
 def test_payment_requirements_shape():

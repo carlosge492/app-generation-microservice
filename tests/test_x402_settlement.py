@@ -25,7 +25,7 @@ from src.payments.eip3009 import (
     verify_payment,
 )
 from src.payments.replay import InMemoryNonceStore
-from src.payments.facilitator import SettlementResult
+from src.payments.facilitator import PrecheckResult, SettlementResult
 from src.payments.x402 import X402Verifier
 
 TOKEN = TokenConfig(
@@ -281,6 +281,40 @@ def test_concurrent_replays_yield_exactly_one_winner(payer):
         t.join()
 
     assert sum(results) == 1, f"expected exactly one winner, got {sum(results)}"
+
+
+def test_an_unfunded_payer_keeps_their_authorization(payer):
+    """Insufficient funds is recoverable: the payer tops up and re-presents the
+    same signature. Claiming the nonce before asking the facilitator would burn
+    it permanently for a payment that never happened. Confirmed against the live
+    facilitator, which reports this case as invalid_exact_evm_insufficient_balance.
+    """
+    class BrokeFacilitator:
+        def precheck(self, payment):
+            return PrecheckResult(False, reason="invalid_exact_evm_insufficient_balance")
+
+        def settle(self, payment):
+            raise AssertionError("must not reach settlement after a failed precheck")
+
+    header, _ = _sign(payer)
+    nonces = InMemoryNonceStore()
+    verifier = _verifier(nonces=nonces, facilitator=BrokeFacilitator())
+
+    assert verifier.settle(header) is False
+    assert "insufficient_balance" in verifier.last_error
+    assert len(nonces) == 0, "an unfunded payer must keep their authorization"
+
+    # And once funded, the very same signature works.
+    class FundedFacilitator:
+        def precheck(self, payment):
+            return PrecheckResult(True)
+
+        def settle(self, payment):
+            return SettlementResult(True, transaction="0xpaid")
+
+    funded = _verifier(nonces=nonces, facilitator=FundedFacilitator())
+    assert funded.settle(header) is True
+    assert funded.last_transaction == "0xpaid"
 
 
 def test_a_failed_settlement_does_not_release_the_nonce(payer):
