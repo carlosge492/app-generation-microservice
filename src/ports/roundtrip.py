@@ -41,16 +41,27 @@ from src.prd.schema import PRD
 
 # `factory Observation.fromSnapshot(DocumentSnapshot<Map<String, dynamic>> doc)`
 # and `factory Observation.fromDoc(DocumentSnapshot<...> doc)`.
-_FROM_SNAPSHOT = re.compile(
-    r"factory\s+(\w+)\s*\.\s*(\w+)\s*\(\s*DocumentSnapshot", re.M
-)
+_FACTORY = re.compile(r"factory\s+(\w+)\s*\.\s*(\w+)\s*\(([^)]*)\)", re.M)
+
+# The deserialiser does not have to take a DocumentSnapshot. Opus writes
+# `fromMap(String id, Map<String, dynamic> map)`, which is arguably the better
+# design — it keeps the model free of Firestore types — and a discovery that
+# insisted on a snapshot silently emitted no test for it at all.
+SNAPSHOT = "snapshot"
+MAP_WITH_ID = "map_with_id"
+MAP_ONLY = "map_only"
 
 # `Map<String, dynamic> toMap() {` and `Map<String, dynamic> toJson() =>`.
 # The empty parens matter: they keep this from matching the `DocumentSnapshot<
 # Map<String, dynamic>> doc` in the factory signature above.
 _TO_MAP = re.compile(r"Map<\s*String\s*,\s*dynamic\s*>\s+(\w+)\s*\(\s*\)")
 
-_REQUIRED_PARAM = re.compile(r"required\s+this\.(\w+)")
+# Every constructor parameter, required or not. Matching only `required this.x`
+# was itself over-fitted: `TemplateGenerator` marks every field required, but a
+# model is free to make fields optional with defaults — Claude does — and a
+# discovery that only sees required ones finds nothing to assert and silently
+# emits no test at all.
+_CTOR_PARAM = re.compile(r"(required\s+)?this\.(\w+)")
 _FIELD_DECL = re.compile(r"final\s+([\w<>?]+)\s+(\w+)\s*;")
 _PUBSPEC_NAME = re.compile(r"^name:\s*([A-Za-z_][A-Za-z0-9_]*)", re.M)
 
@@ -63,16 +74,62 @@ class ModelApi:
         cls: str,
         path: str,
         from_snapshot: str,
+        from_style: str,
         to_map: str,
-        required: list[str],
+        params: list[tuple[str, bool]],
         types: dict[str, str],
     ) -> None:
         self.cls = cls
         self.path = path
         self.from_snapshot = from_snapshot
+        # SNAPSHOT | MAP_WITH_ID | MAP_ONLY — how it wants to be called.
+        self.from_style = from_style
         self.to_map = to_map
-        self.required = required
+        # (name, is_required) for every constructor parameter, in order.
+        self.params = params
         self.types = types
+
+
+def _deserialiser_style(params: str) -> str | None:
+    """Classify a factory's parameter list, or None if it is not a deserialiser."""
+    flat = re.sub(r"\s+", " ", params)
+    if "DocumentSnapshot" in flat:
+        return SNAPSHOT
+    if re.search(r"Map<\s*String\s*,\s*dynamic\s*>", flat):
+        # `(String id, Map<...> map)` needs the document id passed separately;
+        # `(Map<...> map)` does not. Getting this wrong is an arity error, so it
+        # is read off the signature rather than assumed.
+        before = flat.split("Map<")[0]
+        return MAP_WITH_ID if "String" in before else MAP_ONLY
+    return None
+
+
+def _restore_call(api: ModelApi) -> str:
+    """The Dart that rebuilds the model from what Firestore handed back."""
+    if api.from_style == SNAPSHOT:
+        return f"{api.cls}.{api.from_snapshot}(snapshot)"
+    if api.from_style == MAP_WITH_ID:
+        return f"{api.cls}.{api.from_snapshot}(snapshot.id, snapshot.data()!)"
+    return f"{api.cls}.{api.from_snapshot}(snapshot.data()!)"
+
+
+def _ctor_params(body: str, cls: str) -> list[tuple[str, bool]]:
+    """Constructor parameters for `cls`, as (name, is_required).
+
+    The declaration is told apart from every `Cls(...)` call site by the fact
+    that only the declaration binds `this.` fields — matching the first
+    occurrence would otherwise pick up the `return Cls(...)` inside the
+    deserialiser and find nothing.
+    """
+    for match in re.finditer(rf"\b{re.escape(cls)}\s*\(([^)]*)\)", body):
+        params = match.group(1)
+        if "this." not in params:
+            continue
+        return [
+            (name, bool(required))
+            for required, name in _CTOR_PARAM.findall(params)
+        ]
+    return []
 
 
 def _package_name(prd: PRD, files: dict[str, str]) -> str:
@@ -93,7 +150,10 @@ def _find_model_api(files: dict[str, str], model_name: str) -> ModelApi | None:
     for path, body in sorted(files.items()):
         if not path.startswith("lib/"):
             continue
-        for cls, from_snapshot in _FROM_SNAPSHOT.findall(body):
+        for cls, from_snapshot, params in _FACTORY.findall(body):
+            style = _deserialiser_style(params)
+            if style is None:
+                continue
             to_map = _TO_MAP.search(body)
             if to_map is None:
                 # It can read documents but not write them; a round trip needs
@@ -104,8 +164,9 @@ def _find_model_api(files: dict[str, str], model_name: str) -> ModelApi | None:
                     cls=cls,
                     path=path,
                     from_snapshot=from_snapshot,
+                    from_style=style,
                     to_map=to_map.group(1),
-                    required=_REQUIRED_PARAM.findall(body),
+                    params=_ctor_params(body, cls),
                     types=dict(
                         (name, dart_type)
                         for dart_type, name in _FIELD_DECL.findall(body)
@@ -161,18 +222,23 @@ def build_roundtrip_tests(prd: PRD, files: dict[str, str]) -> dict[str, str]:
 
         fields = {f.name: f.type for f in model.fields}
         arguments = []
-        for name in api.required:
+        for name, required in api.params:
             if name in fields:
+                # Always supplied, required or not: a PRD field left to its
+                # default would round-trip a default and prove nothing.
                 arguments.append(f"      {name}: {_sample_literal(fields[name])},")
-            else:
+            elif required:
                 arguments.append(f"      {name}: {_placeholder(api.types.get(name, ''))},")
+            # Optional parameters the PRD says nothing about — a generator's own
+            # `createdAt` or `userId` — are left to their defaults. Inventing
+            # values for them would be guessing at someone else's semantics.
 
         # Only PRD fields are asserted. `id` is reassigned by Firestore, and any
         # other constructor parameter is the generator's business, not ours.
         checks = "\n".join(
             f"    expect(restored.{name}, original.{name},\n"
             f"        reason: '{name} did not survive the round trip');"
-            for name in api.required
+            for name, _ in api.params
             if name in fields
         )
         if not checks:
@@ -245,7 +311,8 @@ void main() {{
     final reference = await fs.FirebaseFirestore.instance
         .collection('{model.collection}')
         .add(original.{api.to_map}());
-    final restored = {api.cls}.{api.from_snapshot}(await reference.get());
+    final snapshot = await reference.get();
+    final restored = {_restore_call(api)};
 
 {checks}
   }});

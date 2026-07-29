@@ -234,6 +234,128 @@ def test_a_model_named_after_a_firestore_type_still_compiles():
     assert "as fs;" in source and "/providers/" in source
 
 
+def test_optional_constructor_parameters_are_still_filled_in():
+    """Found by running against real Claude output, which marks only `id` as
+    `required` and gives the rest defaults. Matching only `required this.x`
+    found nothing assertable and silently emitted no test at all — the same
+    over-fitting this module exists to avoid, in the constructor instead of the
+    method names."""
+    files = {
+        "pubspec.yaml": "name: fieldnotes\n",
+        "lib/models/observation.dart": (
+            "class Observation {\n"
+            "  final String id;\n"
+            "  final String? title;\n"
+            "  final int count;\n"
+            "  final DateTime? recordedAt;\n"
+            "  final String? userId;\n"
+            "\n"
+            "  Observation({\n"
+            "    required this.id,\n"
+            "    this.title,\n"
+            "    this.count = 0,\n"
+            "    this.recordedAt,\n"
+            "    this.userId,\n"
+            "  });\n"
+            "\n"
+            "  factory Observation.fromFirestore(DocumentSnapshot doc) {\n"
+            "    final data = doc.data() as Map<String, dynamic>?;\n"
+            "    return Observation(id: doc.id);\n"
+            "  }\n"
+            "\n"
+            "  Map<String, dynamic> toFirestore() {\n"
+            "    return {'title': title};\n"
+            "  }\n"
+            "}\n"
+        ),
+    }
+
+    source = next(
+        src for path, src in build_roundtrip_tests(_prd(), files).items()
+        if path.endswith("_roundtrip_test.dart")
+    )
+
+    # Optional PRD fields are supplied anyway — a field left to its default
+    # round-trips the default and proves nothing.
+    assert "title: 'round trip'," in source
+    assert "count: 7," in source
+    assert "recordedAt: stamp," in source
+    assert "expect(restored.title," in source
+    # The generator's own optional field is left alone: inventing a value for
+    # it would be guessing at someone else's semantics.
+    assert "userId:" not in source
+    # And a third spelling of the same contract still resolves.
+    assert ".toFirestore()" in source and ".fromFirestore(" in source
+
+
+def _model_source(factory_signature: str, body: str = "") -> dict[str, str]:
+    return {
+        "pubspec.yaml": "name: field_notes\n",
+        "lib/models/observation.dart": (
+            "class Observation {\n"
+            "  const Observation({required this.title});\n"
+            "  final String title;\n"
+            f"  factory Observation.{factory_signature} {{\n"
+            f"    {body or 'return const Observation(title: 0);'}\n"
+            "  }\n"
+            "  Map<String, dynamic> toMap() => <String, dynamic>{'title': title};\n"
+            "}\n"
+        ),
+    }
+
+
+def test_a_deserialiser_taking_an_id_and_a_map_is_called_with_both():
+    """Opus writes `fromMap(String id, Map<String, dynamic> map)` — no
+    DocumentSnapshot anywhere. Insisting on a snapshot parameter emitted no test
+    for the generator this project actually ships on."""
+    files = _model_source("fromMap(String id, Map<String, dynamic> map)")
+
+    source = next(
+        src for path, src in build_roundtrip_tests(_prd(), files).items()
+        if path.endswith("_roundtrip_test.dart")
+    )
+
+    assert "Observation.fromMap(snapshot.id, snapshot.data()!)" in source
+
+
+def test_a_deserialiser_taking_only_a_map_is_called_with_one_argument():
+    """Passing the id to a one-argument factory is an arity error, so the shape
+    is read off the signature rather than assumed."""
+    files = _model_source("fromMap(Map<String, dynamic> map)")
+
+    source = next(
+        src for path, src in build_roundtrip_tests(_prd(), files).items()
+        if path.endswith("_roundtrip_test.dart")
+    )
+
+    assert "Observation.fromMap(snapshot.data()!)" in source
+    assert "snapshot.id" not in source
+
+
+def test_a_factory_that_is_not_a_deserialiser_is_ignored():
+    """`factory Observation.empty()` takes neither a snapshot nor a map, so
+    there is nothing to rebuild a document with."""
+    files = _model_source("empty()")
+
+    assert build_roundtrip_tests(_prd(), files) == {}
+
+
+def test_the_declaration_is_not_confused_with_a_call_site():
+    """`return Observation(id: doc.id)` inside the deserialiser looks like a
+    constructor. Taking the first match finds no `this.` bindings and emits
+    nothing."""
+    from src.ports.roundtrip import _ctor_params
+
+    body = (
+        "class Observation {\n"
+        "  factory Observation.fromDoc(DocumentSnapshot d) => Observation(id: d.id);\n"
+        "  Observation({required this.id, this.title});\n"
+        "}\n"
+    )
+
+    assert _ctor_params(body, "Observation") == [("id", True), ("title", False)]
+
+
 def test_a_single_oddly_named_class_is_still_used():
     """One serialisable class in the whole app is unambiguous even if it is not
     spelled the way the PRD spells the model."""

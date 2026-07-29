@@ -277,7 +277,8 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Generated date fields survive a round trip | same | ✅ was broken; see below |
 | Every generated app ships a round-trip test | generated from the PRD in the QA phase | ✅ not run in the loop — needs an emulator |
 | That test generator is not template-specific | discovers both generators' serialiser pairs | ✅ `fromSnapshot`/`toMap` and `fromDoc`/`toJson` |
-| Claude output against a live Firestore | — | ❌ prompt warns of the trap, never run |
+| Claude output against a live Firestore | Opus 5 app, emulator + Chrome | ✅ round trip passes |
+| Discovery works on model code nobody wrote for it | Opus, Haiku, template, fixture | ✅ four serialiser shapes |
 | Navigation between screens | — | ❌ still only "the screen builds" |
 | Release build is unsigned, not debug-signed | real `--release` build, `apksigner` | ✅ verified unsigned |
 | The artifact is signable by the buyer | signed with a throwaway keystore | ✅ verifies against their cert |
@@ -332,13 +333,31 @@ Running it is opt-in. It needs an emulator and a browser, and making the
 analysis loop depend on Node, a JDK 21 and Chrome would be a large tax on every
 build for a check most builds cannot run.
 
-Two limits on that ✅. It ran in **Chrome, not on Android** — this machine has no
+One limit on that ✅: it ran in **Chrome, not on Android** — this machine has no
 AVD or system image — which is enough for a platform-independent Dart mapper bug
-and not enough to claim the app works on a phone. And it covers the **template
-generator only**: the Claude generator's prompt now documents the same trap, but
-no Opus output has been put in front of a live Firestore.
+and not enough to claim the app works on a phone.
 
-251 unit tests; eval sweep 11/11 against real analysis and widget tests;
+Opus output has now been through it, and passed: the model it wrote handles
+`Timestamp` correctly in both directions, so the prompt guidance holds up rather
+than merely existing. Getting there cost two bugs, both in the *discovery* and
+both the same mistake this module was written to avoid — over-fitting to the one
+generator that was available while writing it.
+
+- `TemplateGenerator` marks every constructor parameter `required`. Claude makes
+  most of them optional with defaults. Matching only `required this.x` found
+  nothing to assert and emitted **no test at all** — failure that looks
+  identical to success.
+- The deserialiser need not take a `DocumentSnapshot`. Opus writes
+  `fromMap(String id, Map<String, dynamic> map)`, keeping the model free of
+  Firestore types, which is arguably the better design and matched nothing.
+
+Four serialiser shapes are now covered — `fromSnapshot`/`toMap`,
+`fromDoc`/`toJson`, `fromFirestore`/`toFirestore`, `fromMap`/`toMap` — across
+two call arities. The lesson is the one this repo keeps relearning: a check
+written while looking at a single generator encodes that generator's taste, and
+the only way to find out is to run it against code somebody else wrote.
+
+259 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout
