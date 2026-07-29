@@ -199,6 +199,7 @@ debug-signed APK reaches a buyer labelled as a release build.
 | Build worker (pulls from the queue) | `poetry run python -m src.service.worker` |
 | Prove a build survives a killed worker | `poetry run python scripts/verify_durable_execution.py` |
 | Prove a release APK is unsigned and signable | `poetry run python scripts/verify_release_signing.py` |
+| Prove a generated app really talks to Firestore | `poetry run python scripts/verify_firestore_roundtrip.py` |
 | Check the x402 payer is funded | `poetry run python scripts/check_x402_funding.py` |
 
 Useful flags: `--generator {template,claude}`, `--analyzer {stub,dart}`,
@@ -271,7 +272,10 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Claude generator (Opus 5) | full eval sweep | ✅ 11/11 |
 | APK packaging (template) | `flutter build apk --debug` | ✅ correct applicationId |
 | APK packaging (Opus output) | `flutter build apk --debug` | ✅ 145 MB, x402-gated |
-| Navigation / real Firestore I/O | — | ❌ needs an emulator |
+| Real Firestore read/write | emulator + Chrome, generated app | ✅ template generator, web only |
+| Generated date fields survive a round trip | same | ✅ was broken; see below |
+| Claude output against a live Firestore | — | ❌ prompt warns of the trap, never run |
+| Navigation between screens | — | ❌ still only "the screen builds" |
 | Release build is unsigned, not debug-signed | real `--release` build, `apksigner` | ✅ verified unsigned |
 | The artifact is signable by the buyer | signed with a throwaway keystore | ✅ verifies against their cert |
 | Play upload | — | ❌ needs a Play account and a listing |
@@ -284,7 +288,23 @@ boundaries, the sockets and the `SIGKILL` are genuine; the server implementing
 `LMOVE` and key expiry is not. Running `scripts/verify_durable_execution.py`
 against a real Redis is a `REDIS_URL` away and has not been done.
 
-229 unit tests; eval sweep 11/11 against real analysis and widget tests;
+The Firestore rows earned their asterisk the hard way. Everything above them is
+static — `flutter analyze` proves the code type-checks, conformance proves it
+matches the PRD, the generated widget tests prove the screens build — and none
+of it executes a Firestore call. The first time one ran, it found that every
+generated app with a `date` field threw on reading back a document it had
+written itself: Firestore stores a `DateTime` as a `Timestamp` and hands back a
+`Timestamp`, and `data['x'] as DateTime?` is well-typed Dart that always throws.
+Fixed, and `scripts/verify_firestore_roundtrip.py` fails against the old mapper
+and passes against the new one, which is the only reason to trust it.
+
+Two limits on that ✅. It ran in **Chrome, not on Android** — this machine has no
+AVD or system image — which is enough for a platform-independent Dart mapper bug
+and not enough to claim the app works on a phone. And it covers the **template
+generator only**: the Claude generator's prompt now documents the same trap, but
+no Opus output has been put in front of a live Firestore.
+
+235 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout
@@ -317,6 +337,7 @@ src/
 evals/
   prds/                10 PRDs chosen to break things
   run.py               pass-rate harness
+emulator/              Firestore emulator config (a demo-* project; no keys)
 ```
 
 ## Notes and limitations
@@ -324,6 +345,13 @@ evals/
 - **Escaping is load-bearing.** PRD text crosses into two generated languages,
   and each boundary needs its own escaping: `yaml_scalar` for `pubspec.yaml`,
   `dart_string` for Dart literals. Both exist because both broke in testing.
+- **The Firestore emulator needs a different JDK than the build does.**
+  `firebase-tools` refuses anything below JDK 21; the Android/Gradle toolchain
+  here is pinned to 17. They coexist — the emulator is handed a 21+ on its own
+  `PATH` and nothing else changes — but the failure reads as a Java problem
+  rather than a version-policy one. Set `EMULATOR_JAVA_HOME` if the script's
+  search does not find a 21+. It also needs `firebase-tools` and a
+  `chromedriver` whose major version matches the installed Chrome.
 - **The stub analyzer cannot parse Dart.** It enforces conventions and catches
   provider desync, but it passed a project with 59 syntax errors. Treat a green
   offline run as a smoke signal, not proof; use `--analyzer dart` for that.
