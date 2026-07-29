@@ -247,7 +247,7 @@ def test_successful_settlement_returns_the_transaction():
         assert request.url.path == "/settle"
         return httpx.Response(200, json={"success": True, "transaction": "0xdeadbeef"})
 
-    result = _facilitator(handler).settle_detailed(_Payment())
+    result = _facilitator(handler).settle(_Payment())
     assert result.ok is True
     assert result.transaction == "0xdeadbeef"
 
@@ -262,7 +262,7 @@ def test_the_request_carries_payload_and_requirements():
         seen.update(_json.loads(request.content))
         return httpx.Response(200, json={"success": True})
 
-    _facilitator(handler).settle_detailed(_Payment())
+    _facilitator(handler).settle(_Payment())
     assert seen["paymentPayload"] == _Payment.payload
     assert seen["paymentRequirements"]["payTo"] == PAY_TO
     assert seen["paymentRequirements"]["maxAmountRequired"] == "500000"
@@ -273,7 +273,7 @@ def test_explicit_refusal_is_a_definite_failure_not_unknown():
     def handler(request):
         return httpx.Response(200, json={"success": False, "errorReason": "insufficient_funds"})
 
-    result = _facilitator(handler).settle_detailed(_Payment())
+    result = _facilitator(handler).settle(_Payment())
     assert result.settled is False
     assert result.unknown is False
     assert "insufficient_funds" in result.reason
@@ -287,7 +287,7 @@ def test_a_refusal_is_not_retried():
         calls.append(1)
         return httpx.Response(200, json={"success": False, "errorReason": "nope"})
 
-    _facilitator(handler, retries=3).settle_detailed(_Payment())
+    _facilitator(handler, retries=3).settle(_Payment())
     assert len(calls) == 1
 
 
@@ -298,7 +298,7 @@ def test_transient_server_error_is_retried_then_reported_unknown():
         calls.append(1)
         return httpx.Response(503, json={"error": "upstream busy"})
 
-    result = _facilitator(handler, retries=2).settle_detailed(_Payment())
+    result = _facilitator(handler, retries=2).settle(_Payment())
     assert len(calls) == 3, "a 5xx is the facilitator breaking, not the payment"
     assert result.unknown is True
 
@@ -314,7 +314,7 @@ def test_a_retry_can_succeed_after_a_transient_failure():
             return httpx.Response(502, json={"error": "bad gateway"})
         return httpx.Response(200, json={"success": True, "transaction": "0xok"})
 
-    result = _facilitator(handler, retries=2).settle_detailed(_Payment())
+    result = _facilitator(handler, retries=2).settle(_Payment())
     assert result.ok is True
     assert result.transaction == "0xok"
 
@@ -326,7 +326,7 @@ def test_timeout_is_unknown_not_refused():
     def handler(request):
         raise httpx.ReadTimeout("too slow", request=request)
 
-    result = _facilitator(handler, retries=1).settle_detailed(_Payment())
+    result = _facilitator(handler, retries=1).settle(_Payment())
     assert result.settled is False
     assert result.unknown is True
     assert "timeout" in result.reason
@@ -338,7 +338,7 @@ def test_ambiguous_success_field_is_not_treated_as_payment():
     def handler(request):
         return httpx.Response(200, json={"status": "probably fine"})
 
-    result = _facilitator(handler).settle_detailed(_Payment())
+    result = _facilitator(handler).settle(_Payment())
     assert result.ok is False
     assert result.unknown is True
 
@@ -347,23 +347,27 @@ def test_unreadable_body_is_unknown():
     def handler(request):
         return httpx.Response(200, content=b"<html>gateway</html>")
 
-    assert _facilitator(handler).settle_detailed(_Payment()).unknown is True
+    assert _facilitator(handler).settle(_Payment()).unknown is True
 
 
 def test_client_error_is_a_definite_refusal():
     def handler(request):
         return httpx.Response(400, json={"errorReason": "malformed payload"})
 
-    result = _facilitator(handler).settle_detailed(_Payment())
+    result = _facilitator(handler).settle(_Payment())
     assert result.unknown is False
     assert "malformed payload" in result.reason
 
 
-def test_settle_narrows_to_a_bool_for_the_protocol():
+def test_settle_returns_the_receipt_not_just_a_bool():
+    """The transaction hash is the buyer's only proof of payment. A bool has
+    nowhere to put it, and an earlier version lost it all the way to the API."""
     def handler(request):
-        return httpx.Response(200, json={"success": True})
+        return httpx.Response(200, json={"success": True, "transaction": "0xreceipt"})
 
-    assert _facilitator(handler).settle(_Payment()) is True
+    result = _facilitator(handler).settle(_Payment())
+    assert result.ok is True
+    assert result.transaction == "0xreceipt"
 
 
 def test_payment_requirements_shape():

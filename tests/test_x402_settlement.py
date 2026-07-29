@@ -25,6 +25,7 @@ from src.payments.eip3009 import (
     verify_payment,
 )
 from src.payments.replay import InMemoryNonceStore
+from src.payments.facilitator import SettlementResult
 from src.payments.x402 import X402Verifier
 
 TOKEN = TokenConfig(
@@ -287,13 +288,13 @@ def test_a_failed_settlement_does_not_release_the_nonce(payer):
 
     class RefusingFacilitator:
         def settle(self, payment):
-            return False
+            return SettlementResult(False, reason="insufficient funds")
 
     header, _ = _sign(payer)
     verifier = _verifier(facilitator=RefusingFacilitator())
 
     assert verifier.settle(header) is False
-    assert "settled" in verifier.last_error
+    assert "not settled" in verifier.last_error
     # Still spent: a second attempt is a replay, not a retry.
     assert verifier.settle(header) is False
     assert "already been used" in verifier.last_error

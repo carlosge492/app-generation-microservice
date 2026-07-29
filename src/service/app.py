@@ -227,7 +227,13 @@ def create_app(
         store: JobStore = request.app.state.store
         job = store.create(prd.app_name)
         job.build_dir = str(BUILD_ROOT / job.id)
-        job.settlement_tx = getattr(request.app.state.verifier, "last_transaction", None)
+        # Explicit, not getattr-with-a-default: the buyer's proof of payment
+        # went missing for a while behind exactly that kind of silent fallback.
+        verifier = request.app.state.verifier
+        job.settlement_tx = (
+            verifier.last_transaction
+            if isinstance(verifier, X402Verifier) else None
+        )
         store.save(job)
         request.app.state.runner.submit(job, _make_runner(prd))
         return JSONResponse(

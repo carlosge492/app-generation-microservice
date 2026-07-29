@@ -10,6 +10,7 @@ from __future__ import annotations
 import secrets
 from typing import Any, Protocol
 
+from src.payments.facilitator import SettlementResult
 from src.payments.eip3009 import (
     PaymentInvalid,
     TokenConfig,
@@ -61,9 +62,16 @@ class PaymentVerifier(Protocol):
 
 
 class Facilitator(Protocol):
-    """Submits a verified authorization on-chain and reports whether it landed."""
+    """Submits a verified authorization on-chain and reports what happened.
 
-    def settle(self, payment: VerifiedPayment) -> bool: ...
+    Returns a `SettlementResult` rather than a bool deliberately. A bool has
+    room for "settled" and "did not settle" and nowhere to put the transaction
+    hash — which is the buyer's only proof of payment — or the difference
+    between a definite refusal and an unknown outcome. An earlier version did
+    return a bool, and the receipt was silently lost all the way to the API.
+    """
+
+    def settle(self, payment: VerifiedPayment) -> SettlementResult: ...
 
 
 class UnsettledFacilitator:
@@ -73,15 +81,18 @@ class UnsettledFacilitator:
     proves the money moved. With no facilitator configured the service is
     accepting signed promises, which is a deliberate deployment choice for a
     testnet or a trusted counterparty and a bad one otherwise. It is therefore
-    reported by /healthz rather than left to be inferred.
+    reported by /healthz rather than left to be inferred, and the result carries
+    no transaction hash because there is no transaction.
     """
 
     def __init__(self) -> None:
         self.pending: list[VerifiedPayment] = []
 
-    def settle(self, payment: VerifiedPayment) -> bool:
+    def settle(self, payment: VerifiedPayment) -> SettlementResult:
         self.pending.append(payment)
-        return True
+        return SettlementResult(
+            settled=True, reason="verification-only: not submitted on-chain"
+        )
 
 
 class X402Verifier:
@@ -111,9 +122,15 @@ class X402Verifier:
         self.facilitator = facilitator or UnsettledFacilitator()
         self.clock_skew = clock_skew
         self.last_error: str | None = None
+        # The buyer's receipt. Populated on success so the API can hand back
+        # proof of payment rather than an unverifiable "trust me".
+        self.last_transaction: str | None = None
+        self.last_settlement: SettlementResult | None = None
 
     def settle(self, header_value: str | None) -> bool:
         self.last_error = None
+        self.last_transaction = None
+        self.last_settlement = None
         if not header_value:
             self.last_error = "no payment header"
             return False
@@ -137,10 +154,21 @@ class X402Verifier:
             self.last_error = "authorization has already been used"
             return False
 
-        if not self.facilitator.settle(payment):
+        result = self.facilitator.settle(payment)
+        self.last_settlement = result
+        if not result.ok:
             # The nonce stays claimed on purpose: see replay.py.
-            self.last_error = "payment could not be settled on-chain"
+            self.last_error = (
+                # An unknown outcome is not a refusal, and saying so matters:
+                # the buyer may have been charged for a build they did not get.
+                f"settlement outcome unknown ({result.reason}) — "
+                "the payment may have executed on-chain"
+                if result.unknown
+                else f"payment was not settled: {result.reason}"
+            )
             return False
+
+        self.last_transaction = result.transaction
         return True
 
 

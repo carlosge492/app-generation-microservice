@@ -116,10 +116,7 @@ class HttpFacilitator:
 
     # -- protocol ----------------------------------------------------------- #
 
-    def settle(self, payment: VerifiedPayment) -> bool:
-        return self.settle_detailed(payment).ok
-
-    def settle_detailed(self, payment: VerifiedPayment) -> SettlementResult:
+    def settle(self, payment: VerifiedPayment) -> SettlementResult:
         body = {
             "x402Version": 1,
             "paymentPayload": payment.payload,
