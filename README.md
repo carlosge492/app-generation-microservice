@@ -63,7 +63,7 @@ QA diagnostics are routed to whichever agent can actually fix them. If a round
 changes nothing, the router escalates to the other agent rather than spending
 the whole repair budget re-running the one that already failed.
 
-## The two generators
+## The three generators
 
 Both implement the same `CodeGenerator` port, so the graph does not know which
 it has.
@@ -110,7 +110,7 @@ src/
   ports/
     generator.py       CodeGenerator protocol
     templates.py       deterministic generator (validated)
-    llm.py             Claude generator (UNVALIDATED)
+    llm.py             Claude generator (Opus 5, validated)
     analyzer.py        StubAnalyzer (offline) + FlutterAnalyzer (real)
     conformance.py     does the app match the PRD?
     smoke.py           generates widget tests from the output
