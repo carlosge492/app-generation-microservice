@@ -1,0 +1,74 @@
+# Single-VM deployment: one container that accepts payment and builds APKs,
+# plus the Redis it needs to be safe across processes and restarts.
+#
+#   docker compose --env-file .env.deploy up -d --build
+#
+# Redis is not optional here even though the code tolerates its absence. Without
+# REDIS_URL the nonce store is per-process and the job store is in memory: a
+# restart loses builds that were paid for, and replay protection stops holding
+# across workers. `/healthz` reports which of those two worlds it is in.
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      BUILD_ROOT: /data/builds
+      FLUTTER_ROOT: /opt/flutter
+      ANDROID_SDK_ROOT: /opt/android
+
+      # --- x402: what the buyer pays, and to whom ---------------------------
+      # Base Sepolia. Real signatures, real on-chain settlement, no real money.
+      # Every value here is checked into .env.deploy.example except the address
+      # that receives the payment, which is deployment-specific.
+      X402_TOKEN_CONTRACT: ${X402_TOKEN_CONTRACT}
+      X402_CHAIN_ID: ${X402_CHAIN_ID}
+      X402_NETWORK: ${X402_NETWORK}
+      X402_PRICE_ATOMIC: ${X402_PRICE_ATOMIC}
+      X402_PAY_TO: ${X402_PAY_TO}
+      # Without a facilitator the service accepts signed promises it never
+      # settles; /healthz says `settlement: verification-only` when that is so.
+      X402_FACILITATOR_URL: ${X402_FACILITATOR_URL}
+
+      # --- generation -------------------------------------------------------
+      # The service defaults to the Claude generator, so this key is required
+      # for the deployment to build anything at all.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      SUPERVISOR_GENERATOR: ${SUPERVISOR_GENERATOR:-claude}
+      SUPERVISOR_BUILD_MODE: ${SUPERVISOR_BUILD_MODE:-debug}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - builds:/data/builds
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # A build can saturate the container, so the timeout is generous: a slow
+      # answer here means "busy", and restarting the container mid-build would
+      # throw away work a buyer has already paid for.
+      test: ["CMD", "python", "-c", "import httpx,sys; sys.exit(0 if httpx.get('http://127.0.0.1:8000/healthz', timeout=20).status_code == 200 else 1)"]
+      interval: 30s
+      timeout: 25s
+      retries: 5
+      start_period: 60s
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    # Jobs outlive restarts only if Redis does. appendonly gives per-second
+    # durability, which is the right trade for a queue whose entries represent
+    # money already taken.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  builds:
+  redis:

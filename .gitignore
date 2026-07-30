@@ -4,6 +4,9 @@ __pycache__/
 .pytest_cache/
 .env
 
+# Deployment configuration: holds the Anthropic key and the receiving address.
+.env.deploy
+
 # Agent output — build artifacts, not source
 generated_apps/
 

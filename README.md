@@ -152,6 +152,53 @@ down a process at a time.
 the job store are both shared — a Redis queue over an in-memory job store loses
 the record the build would be resumed from.
 
+### Deploying it
+
+One container that accepts payment and builds APKs, plus the Redis that makes
+both durable. It wants a VM with a disk: the image carries Flutter, the Android
+SDK and a JDK, so it is around 4 GB before Gradle caches anything, which rules
+out serverless targets and most PaaS free tiers.
+
+```bash
+cp .env.deploy.example .env.deploy     # fill in X402_PAY_TO and ANTHROPIC_API_KEY
+docker compose --env-file .env.deploy up -d --build
+poetry run python scripts/verify_deployment.py https://your-host:8000
+```
+
+Every toolchain version in the `Dockerfile` is pinned to the one the table above
+was proven against — Flutter 3.44.8, Android SDK 36, build-tools 36.0.0, JDK 17.
+Floating any of them makes the build environment a moving target, which is the
+one thing a service promising "it compiles" cannot afford.
+`tests/test_deployment_config.py` fails if they drift, if a `${VAR}` in compose
+has nothing to supply it, or if the builds volume disappears.
+
+**The deployment check is the point of that last command.** A container can come
+up, answer HTTP and still be unsellable: taking payments it never settles,
+losing paid builds on restart, or falling back to the dev shared secret because
+a token variable was misspelled. `/healthz` was built to make each of those
+visible in one line, and `verify_deployment.py` refuses the deployment when it
+sees them. It was itself checked against four deliberately broken deployments —
+no Redis, no facilitator, no token config, wrong chain — and caught all four
+with the fix named in the message. `--pay` goes further and buys a real build
+with the testnet key, which is the only check that proves the deployment can do
+the thing it charges for.
+
+Two things about the buyer-facing surface are worth knowing before pointing
+traffic at it. The service defaults to the **Claude** generator, so a deployment
+without `ANTHROPIC_API_KEY` accepts payment and then fails to build;
+`SUPERVISOR_GENERATOR=template` is the free, deterministic path and a sane first
+deploy. And `SUPERVISOR_BUILD_MODE` decides whether a buyer gets an installable
+debug APK or an unsigned release one — see below for why the service will not
+sign.
+
+**What has not been verified: the image itself.** There is no container runtime
+on the development machine, so `docker build` has never been run against this
+Dockerfile. The download URLs are confirmed to resolve, the versions match the
+verified toolchain, and the configuration it produces has been exercised by
+running the service locally with exactly those environment variables — but the
+first real build will be on the target host, and it should be treated as the
+first time, not as a redeploy.
+
 ### Release builds, and why the service will not sign them
 
 `flutter create` scaffolds a release build type that signs with the **debug**
@@ -201,6 +248,7 @@ debug-signed APK reaches a buyer labelled as a release build.
 | Prove a release APK is unsigned and signable | `poetry run python scripts/verify_release_signing.py` |
 | Prove a generated app really talks to Firestore | `poetry run python scripts/verify_firestore_roundtrip.py` |
 | Prove a user can tap their way into every screen | `poetry run python scripts/verify_navigation_flow.py` |
+| Check a deployment is configured to sell builds | `poetry run python scripts/verify_deployment.py <url>` |
 | Check the x402 payer is funded | `poetry run python scripts/check_x402_funding.py` |
 
 Useful flags: `--generator {template,claude}`, `--analyzer {stub,dart}`,
@@ -289,6 +337,8 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Release build is unsigned, not debug-signed | real `--release` build, `apksigner` | ✅ verified unsigned |
 | The artifact is signable by the buyer | signed with a throwaway keystore | ✅ verifies against their cert |
 | Play upload | — | ❌ needs a Play account and a listing |
+| A misconfigured deployment is refused | 4 broken services, real HTTP | ✅ caught all 4, fix named |
+| The deployment image builds | — | ❌ no container runtime here; see below |
 
 One caveat on the two Redis rows, since "✅" is doing real work there. There is
 no Redis daemon on the development machine, so both were verified against
@@ -483,7 +533,7 @@ export CHROME_EXECUTABLE=~/chrome-for-testing/chrome/win64-150.0.7871.124/chrome
 says otherwise, and the failure it gives for a chromedriver on any other port
 names 4444 rather than the port it was asked for.
 
-279 unit tests; eval sweep 11/11 against real analysis and widget tests;
+288 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout

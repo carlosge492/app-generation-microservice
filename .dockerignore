@@ -1,0 +1,21 @@
+# Generated apps are gigabytes of Gradle output and belong to a build, not the
+# image. Sending them would also ship whatever a previous buyer's PRD produced.
+generated_apps/
+emulator/
+
+# Keys. `.x402-testnet.json` holds a funded testnet private key; it is gitignored
+# and must not reach an image either.
+.env
+.x402-testnet.json
+
+.git/
+.pytest_cache/
+**/__pycache__/
+*.pyc
+
+# The image runs the service. Tests, evals and the verification scripts need a
+# browser, an emulator and a JDK 21, none of which belong in a production image.
+tests/
+evals/
+scripts/
+docs/
