@@ -138,6 +138,23 @@ def test_the_proxy_does_not_cut_off_a_build_or_a_download():
     assert "write_timeout 30m" in caddyfile
 
 
+def test_no_caddy_directive_can_expand_to_nothing():
+    """`email {$ACME_EMAIL:}` is not "email, defaulting to none" — it expands to
+    a bare `email` with no argument, which is a parse error. Caddy then
+    restart-loops and never binds 443, and from outside that is indistinguishable
+    from a closed firewall port. Any directive whose only argument is an
+    empty-defaulted substitution has the same shape."""
+    caddyfile = (ROOT / "deploy" / "Caddyfile").read_text(encoding="utf-8")
+
+    offenders = [
+        line.strip()
+        for line in caddyfile.splitlines()
+        if not line.strip().startswith("#")
+        and re.search(r"^\s*\w+\s+\{\$[A-Z_]+:\}\s*$", line)
+    ]
+    assert not offenders, f"expands to a bare directive when unset: {offenders}"
+
+
 def test_the_acme_challenge_matches_the_open_ports():
     """Port 80 is closed at the cloud firewall, so an HTTP-01 challenge cannot
     complete. Leaving it enabled costs a failed attempt before the fallback."""

@@ -6,11 +6,12 @@
 # the request body is the buyer's product specification, neither of which should
 # cross the network in the clear.
 
-{
-	# Caddy warns without one and ACME accounts are easier to recover with it.
-	# Unset is fine; the certificate is issued either way.
-	email {$ACME_EMAIL:}
-}
+# No global `email` directive. It is optional to ACME and was worth having, but
+# `email {$ACME_EMAIL:}` expands to a bare `email` when the variable is unset,
+# which is a parse error rather than a default — so the proxy restart-looped and
+# never bound 443, and the failure looked like a firewall problem from outside.
+# An optional setting that breaks the config by being absent is worse than not
+# having it. Set ACME_EMAIL in an `email` line here directly if you want one.
 
 {$PUBLIC_HOSTNAME} {
 	tls {

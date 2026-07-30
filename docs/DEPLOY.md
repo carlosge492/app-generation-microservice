@@ -142,11 +142,33 @@ Testnet USDC, so a mistake costs nothing real.
 
 ## 8. Only then, TLS and a public address
 
-Put a reverse proxy on the same host, terminating TLS and forwarding to
-`api:8000` over the compose network. Open 443, leave 8000 loopback-bound. Until
-that exists, the SSH tunnel is the access path — plain HTTP on a public port
-would expose payment authorizations to anyone on the network path, who could
-race a stolen one and collect the APK the buyer paid for.
+Caddy is in the compose stack for this. It terminates TLS on 443 and reaches
+`api:8000` over the compose network, so the API keeps its loopback binding on the
+host. Set `PUBLIC_HOSTNAME` in `.env.deploy` to a name that **already resolves to
+the machine** — Let's Encrypt proves control by connecting back, so a name
+pointing elsewhere fails the challenge and spends one of five weekly attempts.
+
+Without a domain, `sslip.io` resolves a dashed IP in the hostname straight back
+to that IP (`37-27-249-33.sslip.io`), and Let's Encrypt will issue for it. That
+is what the live deployment uses.
+
+Port 80 stays closed, so the config disables the HTTP-01 challenge and Caddy uses
+TLS-ALPN-01 on 443 instead of spending an attempt discovering the same thing.
+
+**Validate the Caddyfile before restarting anything with it.** A Caddyfile error
+is not a degraded proxy: the process exits, the container restart-loops, and from
+outside the box it is indistinguishable from a closed firewall port. That cost
+real time here — `email {$ACME_EMAIL:}` looked like "optional with no default"
+and is actually a parse error when the variable is unset, so an optional setting
+broke the config by being absent.
+
+```bash
+docker run --rm -v /opt/appgen/deploy/Caddyfile:/etc/caddy/Caddyfile:ro -e PUBLIC_HOSTNAME=your.host caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile
+```
+
+Note that `docker compose up -d` will not restart Caddy when only the mounted
+Caddyfile changed — nothing in the service definition differs. Use
+`docker compose restart caddy`.
 
 ## Operating it
 

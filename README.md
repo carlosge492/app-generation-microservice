@@ -374,6 +374,8 @@ Honest status, because "it compiles" and "it works" are different claims:
 | The toolchain resolves on Linux | the deployed build | ✅ was broken; see below |
 | A finished build stops costing 2 GB | live deployment, before/after | ✅ 2.0 GB → 144 MB |
 | The pruned build still downloads | re-fetched after pruning | ✅ `200`, 151 MB |
+| Reachable over TLS on a public address | Let's Encrypt, TLS-ALPN-01 | ✅ trusted cert, no tunnel |
+| A buyer on the open internet can buy | paid run over public HTTPS | ✅ 151 MB APK delivered |
 
 One caveat on the two Redis rows, since "✅" is doing real work there. There is
 no Redis daemon on the development machine, so both were verified against
@@ -568,7 +570,7 @@ export CHROME_EXECUTABLE=~/chrome-for-testing/chrome/win64-150.0.7871.124/chrome
 says otherwise, and the failure it gives for a chromedriver on any other port
 names 4444 rather than the port it was asked for.
 
-306 unit tests; eval sweep 11/11 against real analysis and widget tests;
+311 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout
