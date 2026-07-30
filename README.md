@@ -162,8 +162,13 @@ out serverless targets and most PaaS free tiers.
 ```bash
 cp .env.deploy.example .env.deploy     # fill in X402_PAY_TO and ANTHROPIC_API_KEY
 docker compose --env-file .env.deploy up -d --build
-poetry run python scripts/verify_deployment.py https://your-host:8000
+poetry run python scripts/verify_deployment.py http://127.0.0.1:8000
 ```
+
+`docs/DEPLOY.md` is the runbook: how the machine should be sized and why, the
+firewall trap that Docker's published ports set for ufw, and the order — build,
+prove over an SSH tunnel, buy one real build, and only then put it on a public
+address behind TLS.
 
 Every toolchain version in the `Dockerfile` is pinned to the one the table above
 was proven against — Flutter 3.44.8, Android SDK 36, build-tools 36.0.0, JDK 17.
@@ -533,7 +538,7 @@ export CHROME_EXECUTABLE=~/chrome-for-testing/chrome/win64-150.0.7871.124/chrome
 says otherwise, and the failure it gives for a chromedriver on any other port
 names 4444 rather than the port it was asked for.
 
-288 unit tests; eval sweep 11/11 against real analysis and widget tests;
+294 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout

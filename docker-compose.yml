@@ -12,7 +12,14 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      # Loopback only, deliberately. Docker publishes ports by writing nat rules
+      # that sit *ahead* of ufw, so `ufw deny 8000` does not close a published
+      # port — the service would be on the public internet over plain HTTP,
+      # carrying signed payment authorizations in the clear, while the firewall
+      # said otherwise. Reach it through an SSH tunnel until there is a TLS
+      # proxy in front, which talks to `api:8000` over the compose network and
+      # does not need this published at all.
+      - "127.0.0.1:8000:8000"
     environment:
       REDIS_URL: redis://redis:6379/0
       BUILD_ROOT: /data/builds
@@ -41,6 +48,14 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - builds:/data/builds
+    # A build is verbose and the default json-file driver grows without bound,
+    # which on a box already sized around 1.9 GB of artifact per build is the
+    # second way to run out of disk.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     depends_on:
       redis:
         condition: service_healthy

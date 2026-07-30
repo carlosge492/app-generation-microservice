@@ -94,6 +94,25 @@ def test_compose_gives_the_service_a_redis():
     assert COMPOSE["services"]["api"]["depends_on"]["redis"]["condition"] == "service_healthy"
 
 
+def test_the_api_port_is_not_published_to_the_world():
+    """Docker's published ports are nat rules that sit ahead of ufw, so a
+    `0.0.0.0` binding is reachable from the internet no matter what the firewall
+    says. Over plain HTTP that puts signed payment authorizations and the
+    buyer's PRD in the clear."""
+    for mapping in COMPOSE["services"]["api"]["ports"]:
+        assert str(mapping).startswith("127.0.0.1:"), (
+            f"{mapping} publishes beyond loopback; put a TLS proxy in front "
+            f"instead, which reaches the service over the compose network"
+        )
+
+
+def test_container_logs_are_bounded():
+    """The default json-file driver grows without limit, on a host already
+    sized around 1.9 GB of build artifact apiece."""
+    options = COMPOSE["services"]["api"]["logging"]["options"]
+    assert options["max-size"] and options["max-file"]
+
+
 def test_builds_are_written_to_a_volume():
     """On the overlay filesystem, a redeploy destroys every artifact a buyer has
     paid for and not yet downloaded."""
