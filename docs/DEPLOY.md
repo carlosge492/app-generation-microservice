@@ -12,10 +12,11 @@ build for a real (testnet) payment. Ubuntu 26.04 is newer than the 24.04 below
 and needed no special handling: the container carries its own toolchain, and
 Docker's own installer supported the release.
 
-**Nothing deletes a finished build yet.** A packaged build is 2.0 GB on disk
-(measured on the deployment), and while the job *record* expires from Redis after
-seven days, the directory does not. That is what sizes the disk below, and it is the first
-thing to fix after the deployment is up.
+**Finished builds are pruned automatically.** A build produces 2.0 GB of Gradle
+output for a 144 MB APK; the artifact is kept and the tree dropped the moment the
+build finishes, so a completed sale costs 144 MB rather than 2.0 GB. Whole job
+directories are swept at seven days, matching the job records' TTL. Set
+`BUILD_PRUNE=0` to keep everything while debugging a deployment.
 
 ## 1. The machine
 
@@ -24,7 +25,7 @@ thing to fix after the deployment is up.
 | Architecture | **amd64** | The Flutter Linux SDK is x64-only and the Android build-tools are x86_64 ELF. An arm64 box (Graviton, Ampere — the cheap default at most providers) cannot run either. The image refuses to build on one, with a message saying so. |
 | vCPU | 4 minimum, 8 comfortable | A build is Gradle plus Dart analysis, both CPU-bound, and one container runs one build at a time. 4 vCPU makes a build take a couple of minutes; 8 keeps a queue from forming. |
 | RAM | 8 GB minimum | The Gradle daemon and the Dart analysis server together will not fit comfortably in 4 GB, and an OOM kill mid-build costs a build somebody has paid for. |
-| Disk | **100 GB minimum**, 240 GB comfortable | Measured: **7.71 GB** of image, and **2.0 GB per build** that nothing cleans up. A 150 GB box has room for roughly 58 builds after the image and OS; 240 GB gives about 105. |
+| Disk | **100 GB minimum** | Measured: **7.71 GB** of image, plus **144 MB per completed sale** once pruning has run (2.0 GB transiently, while the build is in progress). A 150 GB box holds roughly 790 sold builds; before pruning it was 58. |
 | OS | Ubuntu 24.04 LTS or Debian 12 | Anything with a current Docker Engine. The image carries its own toolchain, so the host distribution barely matters. |
 
 Hetzner CPX41 (8 vCPU / 16 GB / 240 GB) is the obvious price/performance pick and
@@ -149,8 +150,9 @@ race a stolen one and collect the APK the buyer paid for.
 
 ## Operating it
 
-- **Disk is the thing that will break first.** Nothing prunes `/data/builds`.
-  Watch it with `docker system df -v` and `du -sh /var/lib/docker/volumes/*`.
+- **Disk.** Pruning keeps a completed build at ~144 MB, but a build *in
+  progress* still needs its 2.0 GB, and the Gradle cache grows. Watch it with
+  `docker system df -v` and `du -sh /var/lib/docker/volumes/*`.
 - **`/healthz` is the status source.** `durable_execution` false means a restart
   loses paid builds; `settlement: verification-only` means the money is not
   moving; `payment_mode` other than `x402-eip3009` means the gate is not the

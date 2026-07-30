@@ -157,7 +157,16 @@ the record the build would be resumed from.
 One container that accepts payment and builds APKs, plus the Redis that makes
 both durable. It wants a VM with a disk: the image carries Flutter, the Android
 SDK and a JDK, and measures **7.71 GB**, which rules out serverless targets and
-most PaaS free tiers. Each build then costs **2.0 GB** that nothing yet deletes.
+most PaaS free tiers.
+
+A finished build used to cost **2.0 GB** of Gradle output for a **144 MB** APK,
+and nothing reclaimed it — job records expire from Redis after seven days, which
+is the wrong half, since the record is kilobytes and the directory it names is
+gigabytes. The service now keeps the artifact and drops the tree the moment a
+build finishes, while the worker still holds the lease. Measured on the
+deployment: the last unpruned build is 2.0 GB on disk, the first pruned one is
+144 MB, and it still downloads. That is the difference between about 58 sales
+and about 790 on a 150 GB box.
 
 ```bash
 cp .env.deploy.example .env.deploy     # fill in X402_PAY_TO and ANTHROPIC_API_KEY
@@ -363,6 +372,8 @@ Honest status, because "it compiles" and "it works" are different claims:
 | The deployment image builds | Hetzner VM, Ubuntu 26.04, amd64 | ✅ 7.71 GB, first attempt |
 | A buyer pays and receives an APK | live deployment, Base Sepolia | ✅ real tx, 151 MB APK |
 | The toolchain resolves on Linux | the deployed build | ✅ was broken; see below |
+| A finished build stops costing 2 GB | live deployment, before/after | ✅ 2.0 GB → 144 MB |
+| The pruned build still downloads | re-fetched after pruning | ✅ `200`, 151 MB |
 
 One caveat on the two Redis rows, since "✅" is doing real work there. There is
 no Redis daemon on the development machine, so both were verified against
@@ -557,7 +568,7 @@ export CHROME_EXECUTABLE=~/chrome-for-testing/chrome/win64-150.0.7871.124/chrome
 says otherwise, and the failure it gives for a chromedriver on any other port
 names 4444 rather than the port it was asked for.
 
-299 unit tests; eval sweep 11/11 against real analysis and widget tests;
+306 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout
