@@ -6,16 +6,15 @@ Linux box and proving it works before any buyer can reach it.
 
 Two things are worth knowing before starting.
 
-**The image has never been built.** There is no container runtime on the
-development machine, so `docker build` has not run against this Dockerfile. The
-download URLs are confirmed to resolve, the pinned versions match the toolchain
-every compile claim was made against, and the runtime *configuration* has been
-exercised by running the service locally with exactly these environment
-variables — but treat the first build as a first build.
+**This has been done once, on a 4 vCPU / 8 GB Hetzner box running Ubuntu
+26.04.** The image built on the first attempt and the deployment sold a real
+build for a real (testnet) payment. Ubuntu 26.04 is newer than the 24.04 below
+and needed no special handling: the container carries its own toolchain, and
+Docker's own installer supported the release.
 
-**Nothing deletes a finished build yet.** A packaged build is about 1.9 GB on
-disk (measured), and while the job *record* expires from Redis after seven days,
-the directory does not. That is what sizes the disk below, and it is the first
+**Nothing deletes a finished build yet.** A packaged build is 2.0 GB on disk
+(measured on the deployment), and while the job *record* expires from Redis after
+seven days, the directory does not. That is what sizes the disk below, and it is the first
 thing to fix after the deployment is up.
 
 ## 1. The machine
@@ -25,7 +24,7 @@ thing to fix after the deployment is up.
 | Architecture | **amd64** | The Flutter Linux SDK is x64-only and the Android build-tools are x86_64 ELF. An arm64 box (Graviton, Ampere — the cheap default at most providers) cannot run either. The image refuses to build on one, with a message saying so. |
 | vCPU | 4 minimum, 8 comfortable | A build is Gradle plus Dart analysis, both CPU-bound, and one container runs one build at a time. 4 vCPU makes a build take a couple of minutes; 8 keeps a queue from forming. |
 | RAM | 8 GB minimum | The Gradle daemon and the Dart analysis server together will not fit comfortably in 4 GB, and an OOM kill mid-build costs a build somebody has paid for. |
-| Disk | **100 GB minimum**, 240 GB comfortable | Roughly 4–5 GB of image (estimated from component sizes; not yet measured), a few GB of Gradle cache, and then 1.9 GB per build that nothing cleans up. 240 GB is about 118 builds before the disk is the outage. |
+| Disk | **100 GB minimum**, 240 GB comfortable | Measured: **7.71 GB** of image, and **2.0 GB per build** that nothing cleans up. A 150 GB box has room for roughly 58 builds after the image and OS; 240 GB gives about 105. |
 | OS | Ubuntu 24.04 LTS or Debian 12 | Anything with a current Docker Engine. The image carries its own toolchain, so the host distribution barely matters. |
 
 Hetzner CPX41 (8 vCPU / 16 GB / 240 GB) is the obvious price/performance pick and

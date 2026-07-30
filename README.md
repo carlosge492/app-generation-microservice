@@ -156,8 +156,8 @@ the record the build would be resumed from.
 
 One container that accepts payment and builds APKs, plus the Redis that makes
 both durable. It wants a VM with a disk: the image carries Flutter, the Android
-SDK and a JDK, so it is around 4 GB before Gradle caches anything, which rules
-out serverless targets and most PaaS free tiers.
+SDK and a JDK, and measures **7.71 GB**, which rules out serverless targets and
+most PaaS free tiers. Each build then costs **2.0 GB** that nothing yet deletes.
 
 ```bash
 cp .env.deploy.example .env.deploy     # fill in X402_PAY_TO and ANTHROPIC_API_KEY
@@ -196,13 +196,30 @@ deploy. And `SUPERVISOR_BUILD_MODE` decides whether a buyer gets an installable
 debug APK or an unsigned release one — see below for why the service will not
 sign.
 
-**What has not been verified: the image itself.** There is no container runtime
-on the development machine, so `docker build` has never been run against this
-Dockerfile. The download URLs are confirmed to resolve, the versions match the
-verified toolchain, and the configuration it produces has been exercised by
-running the service locally with exactly those environment variables — but the
-first real build will be on the target host, and it should be treated as the
-first time, not as a redeploy.
+**The image has now been built and sold from.** A 4 vCPU / 8 GB Hetzner box
+running Ubuntu 26.04 built it on the first attempt, and a signed EIP-3009
+authorization settled on Base Sepolia
+([`0x0637c94b…`](https://sepolia.basescan.org/tx/0x0637c94b490531065d3476147eaa7484ed2565ad8168b0639d21cf63b1edb2a5))
+bought a 151 MB APK from it end to end.
+
+It did not work first time, and the way it failed is the point. Every layer of
+the image built, the service came up healthy, `/healthz` reported a correct
+posture, and the deployment check passed — and then the first paid build died:
+
+```
+PermissionError: [Errno 13] Permission denied: '/opt/flutter/bin/flutter.bat'
+```
+
+The Flutter SDK ships `flutter` *and* `flutter.bat` on every platform. Four call
+sites had independently resolved the tool by taking the first candidate that
+`exists()`, Windows spelling first — correct here, an unrunnable batch file on
+the machine that was actually going to run it. 299 tests, an eval sweep, APK
+packaging and the entire verification table had all passed on Windows, where the
+bug cannot appear. It took a buyer paying for a build to find it, which is
+exactly the failure mode the paid check exists to provoke while the buyer is
+still us. `src/ports/toolchain.py` now answers that question once, and takes
+`windows=` as a parameter so both branches are reachable from a test on either
+platform.
 
 ### Release builds, and why the service will not sign them
 
@@ -343,7 +360,9 @@ Honest status, because "it compiles" and "it works" are different claims:
 | The artifact is signable by the buyer | signed with a throwaway keystore | ✅ verifies against their cert |
 | Play upload | — | ❌ needs a Play account and a listing |
 | A misconfigured deployment is refused | 4 broken services, real HTTP | ✅ caught all 4, fix named |
-| The deployment image builds | — | ❌ no container runtime here; see below |
+| The deployment image builds | Hetzner VM, Ubuntu 26.04, amd64 | ✅ 7.71 GB, first attempt |
+| A buyer pays and receives an APK | live deployment, Base Sepolia | ✅ real tx, 151 MB APK |
+| The toolchain resolves on Linux | the deployed build | ✅ was broken; see below |
 
 One caveat on the two Redis rows, since "✅" is doing real work there. There is
 no Redis daemon on the development machine, so both were verified against
@@ -538,7 +557,7 @@ export CHROME_EXECUTABLE=~/chrome-for-testing/chrome/win64-150.0.7871.124/chrome
 says otherwise, and the failure it gives for a chromedriver on any other port
 names 4444 rather than the port it was asked for.
 
-294 unit tests; eval sweep 11/11 against real analysis and widget tests;
+299 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout
