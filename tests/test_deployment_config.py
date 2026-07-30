@@ -18,6 +18,11 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
 DOCKERFILE = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+# The instructions alone. Several comments name the mistakes they exist to warn
+# against, so a check for "this string is absent" has to read past them.
+INSTRUCTIONS = "\n".join(
+    line for line in DOCKERFILE.splitlines() if not line.lstrip().startswith("#")
+)
 ENV_EXAMPLE = (ROOT / ".env.deploy.example").read_text(encoding="utf-8")
 API_ENV = COMPOSE["services"]["api"]["environment"]
 
@@ -37,6 +42,48 @@ def test_the_image_sets_the_toolchain_paths_the_build_code_reads():
     a build with either unset fails at packaging — after the money has moved."""
     for name in ("FLUTTER_ROOT", "ANDROID_SDK_ROOT", "ANDROID_HOME"):
         assert re.search(rf"^ENV .*{name}=|^\s+{name}=", DOCKERFILE, re.M), name
+
+
+def test_root_work_happens_before_the_user_switch():
+    """Three failures that only a real `docker build` would otherwise find, and
+    this machine has no container runtime to find them with.
+
+    After `USER builder`, a RUN cannot create `/data` (root owns `/`) and cannot
+    write to the system site-packages. Both fail the build, and neither error
+    names the ordering as the cause — the site-packages one in particular reads
+    like a broken dependency.
+    """
+    switch = DOCKERFILE.index("USER builder")
+
+    assert DOCKERFILE.index("mkdir -p /data/builds") < switch, \
+        "/data/builds must be created while still root"
+    assert DOCKERFILE.index("poetry install --only main") < switch, \
+        "dependencies must be installed system-wide as root"
+    assert DOCKERFILE.index("chown -R builder:builder") < switch
+
+
+def test_the_entrypoint_binary_is_on_path_for_the_build_user():
+    """`pip install --user` would put uvicorn in ~/.local/bin, which this
+    image's PATH does not include — the container would build clean and then
+    fail to start with 'executable file not found'."""
+    assert "pip install --user" not in INSTRUCTIONS
+    assert "command -v uvicorn" in INSTRUCTIONS
+
+
+def test_the_image_refuses_to_build_on_the_wrong_architecture():
+    """The Flutter Linux SDK is x64-only and the Android build-tools are x86_64
+    ELF, so an arm64 host — the cheap default at most providers — fails deep
+    inside Gradle with an exec-format error that names none of this."""
+    assert "dpkg --print-architecture" in DOCKERFILE
+    assert DOCKERFILE.index("print-architecture") < DOCKERFILE.index("flutter_linux_")
+
+
+def test_the_android_toolchain_is_asserted_not_assumed():
+    """`flutter doctor` exits 0 with pieces of the toolchain missing. apksigner
+    is what src/build/signing.py shells out to, and an image without it packages
+    an APK and then fails at the last step, after payment."""
+    assert "build-tools/36.0.0/apksigner" in DOCKERFILE
+    assert "platforms/android-36" in DOCKERFILE
 
 
 def test_compose_gives_the_service_a_redis():
