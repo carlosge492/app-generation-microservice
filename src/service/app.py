@@ -58,6 +58,11 @@ from src.service.queue import (
     InMemoryBuildQueue,
     RedisBuildQueue,
 )
+from src.service.artifacts import (
+    DEFAULT_RETENTION_SECONDS,
+    keep_only_the_artifact,
+    sweep_expired,
+)
 from src.service.worker import (
     DEFAULT_HEARTBEAT_SECONDS,
     DEFAULT_MAX_ATTEMPTS,
@@ -67,6 +72,15 @@ from src.service.worker import (
 log = logging.getLogger(__name__)
 
 BUILD_ROOT = Path(os.getenv("BUILD_ROOT", "generated_apps/service"))
+
+# A finished build is ~2.0 GB of which the buyer wants ~150 MB. Pruning is on by
+# default because the alternative is a disk that fills after a few dozen sales
+# and fails a build somebody has already paid for; `BUILD_PRUNE=0` keeps the
+# whole tree for anyone debugging a deployment.
+_PRUNE_BUILDS = os.getenv("BUILD_PRUNE", "1") != "0"
+# Matched to RedisJobStore's TTL: once the record expires the download endpoint
+# answers 404, so an APK outliving it is unreachable weight.
+_RETENTION_SECONDS = int(os.getenv("BUILD_RETENTION_SECONDS", DEFAULT_RETENTION_SECONDS))
 
 
 def _settings() -> dict[str, Any]:
@@ -408,6 +422,14 @@ def build_work(job: BuildJob):
         else:
             job.status = BuildStatus.SUCCEEDED
             job.apk_path = final.get("apk_path") or None
+
+        # The buyer wants the APK; the other ~2 GB is a Gradle output tree that
+        # nothing will ever read again. Pruning here rather than on a timer
+        # means the disk is reclaimed while the worker still holds the lease,
+        # so no other worker can be reading the directory as it goes.
+        if _PRUNE_BUILDS:
+            job.apk_path = keep_only_the_artifact(job.build_dir, job.apk_path)
+            sweep_expired(BUILD_ROOT, _RETENTION_SECONDS)
 
     return run
 
