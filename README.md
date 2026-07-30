@@ -200,6 +200,7 @@ debug-signed APK reaches a buyer labelled as a release build.
 | Prove a build survives a killed worker | `poetry run python scripts/verify_durable_execution.py` |
 | Prove a release APK is unsigned and signable | `poetry run python scripts/verify_release_signing.py` |
 | Prove a generated app really talks to Firestore | `poetry run python scripts/verify_firestore_roundtrip.py` |
+| Prove a user can tap their way into every screen | `poetry run python scripts/verify_navigation_flow.py` |
 | Check the x402 payer is funded | `poetry run python scripts/check_x402_funding.py` |
 
 Useful flags: `--generator {template,claude}`, `--analyzer {stub,dart}`,
@@ -281,7 +282,10 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Discovery works on model code nobody wrote for it | Opus, Haiku, template, fixture | ✅ four serialiser shapes |
 | Declared navigation is actually wired | conformance `unreachable_screen` | ✅ found 3 dead routes |
 | The destination renders when navigated to | app's own `main()` + `Navigator`, Chrome | ✅ generated per PRD |
-| A user tapping the affordance arrives | — | ❌ deliberately not tested; see below |
+| A user tapping the affordance arrives | the app's own buttons, Chrome + emulator | ✅ template output, 3 actions |
+| Those tap tests are not decorative | affordance hidden, everything else intact | ✅ exactly the right test went red |
+| The same against a model's own widget choices | — | ❌ not yet run on Claude output |
+| A tap arriving after a form is filled in | — | ❌ multi-step flows; see below |
 | Release build is unsigned, not debug-signed | real `--release` build, `apksigner` | ✅ verified unsigned |
 | The artifact is signable by the buyer | signed with a throwaway keystore | ✅ verifies against their cert |
 | Play upload | — | ❌ needs a Play account and a listing |
@@ -402,11 +406,66 @@ Destinations are identified by their **PRD title**, the one label that is the
 same whatever a generator calls its classes, files or routes. Matching
 `<Id>Screen` would be matching one generator's convention.
 
-What it deliberately does **not** do is hunt for the button. Tapping whatever
-looks tappable until the destination appears is possible, but it depends on
-widget choices that vary far more than a title does, and a flaky navigation test
-is worse than an honest static one. So "a user can get there" rests on
-`unreachable_screen`, and "the destination works once reached" rests on this.
+### Tapping the button, and how we know that test is real
+
+Driving the navigator still leaves the user out of it. `unreachable_screen` says
+*something in the source* navigates to each target; the push case says the
+destination renders once you get there. Neither says a person looking at the
+source screen has anything to tap.
+
+The first version of this refused to go further, on the grounds that hunting for
+a button depends on widget choices and would go flaky. Three decisions make it
+honest instead:
+
+* **What counts as tappable is not a list of buttons.** `InkResponse` sits under
+  `TextButton`, `ElevatedButton`, `IconButton`, `FloatingActionButton` and
+  `ListTile`; `CupertinoButton` and a hand-rolled `GestureDetector` cover the
+  rest. Enumerating button classes would have encoded `TemplateGenerator`'s taste
+  — and would have missed the affordance that ships most, since a generated list
+  screen navigates from a FAB whose only child is an icon and whose label is
+  therefore nothing at all.
+* **Every attempt restarts from a freshly pushed source screen**, which turns
+  "tap things until something happens" from one stateful sequence into N
+  independent one-tap experiments. It matters here: the generated FAB writes a
+  draft document before it navigates, so without the reset each attempt would
+  face a different screen than the last.
+* **Arrival is the route name first and the title second.** A button labelled
+  with the destination's title is good UI, and if arrival meant "the title is on
+  screen" the test would pass before tapping anything — so the title only counts
+  when it was *not* already visible.
+
+None of that is evidence. `scripts/verify_navigation_flow.py` is: it generates
+the eight-screen `many_screens` app, runs the navigation test in Chrome against
+a Firestore emulator, and then runs it again against a mutant with one
+affordance wrapped in `Offstage(offstage: true, ...)`.
+
+That mutation is chosen for what it leaves working. The `Navigator.pushNamed`
+call is still in the file, so `unreachable_screen` still passes. The route table
+is untouched, so the push case still passes. The widget is still in the tree, so
+nothing about the build changes. It is simply never on screen — the app ships
+with a screen no user can open, and everything static stays green:
+
+```
+Failure in method: openToday: a tap on inbox reaches today
+  Expected: empty
+    Actual: 'tapped 2 of 2 affordance(s) on /inbox and none of them reached /today'
+```
+
+Exactly one of the six generated cases went red, and it was the right one. That
+is the only reason to believe the tap cases test anything.
+
+**What it still cannot prove** is that a *multi-step* flow arrives. A sign-in
+screen that navigates only after valid credentials needs a tap and some typing,
+and the PRD says nothing about what to type. Those fail here rather than being
+quietly skipped, which is the right direction — but it means a red tap case is
+"look at this", not automatically "the app is broken".
+
+**And it has only been run on template output.** Every over-fitting bug in this
+repo was invisible until code somebody else wrote went through the check — the
+round-trip discovery was broken twice that way. The affordance search is written
+not to care whose widgets it is looking at, which is exactly the kind of claim
+that has been wrong here before. `--generator claude` on this script is the next
+thing worth spending on.
 
 **Automation needs its own browser.** `flutter drive -d chrome` cannot get a
 controllable Chrome while an ordinary Chrome session is running — the launch is
@@ -420,7 +479,11 @@ npx @puppeteer/browsers install chrome@150.0.7871.124 --path ~/chrome-for-testin
 export CHROME_EXECUTABLE=~/chrome-for-testing/chrome/win64-150.0.7871.124/chrome-win64/chrome.exe
 ```
 
-274 unit tests; eval sweep 11/11 against real analysis and widget tests;
+`flutter drive` also wants the WebDriver on port 4444 unless `--driver-port`
+says otherwise, and the failure it gives for a chromedriver on any other port
+names 4444 rather than the port it was asked for.
+
+279 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout
@@ -438,7 +501,7 @@ src/
     conformance.py     does the app match the PRD?
     smoke.py           generates widget tests from the output
     roundtrip.py       generates the Firestore round-trip test from the output
-    navigation.py      generates the runtime navigation test from the PRD
+    navigation.py      generates the runtime navigation test: push and tap
     runtime.py         runs them
     ownership.py       which agent can fix which diagnostic
   payments/x402.py     the payment gate + x402 verifier selection
