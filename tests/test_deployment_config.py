@@ -106,6 +106,46 @@ def test_the_api_port_is_not_published_to_the_world():
         )
 
 
+def test_tls_terminates_in_front_and_the_api_stays_private():
+    """Only the proxy is on a public port. The API is reached over the compose
+    network, so the X-PAYMENT header and the buyer's PRD never cross the network
+    unencrypted."""
+    caddy = COMPOSE["services"]["caddy"]
+    published = {str(p).split(":")[0] for p in caddy["ports"]}
+
+    assert {"80", "443"} <= published
+    assert "8000" not in published, "the API is not the proxy's job to expose"
+    assert "api" in caddy["depends_on"]
+
+
+def test_certificates_survive_a_redeploy():
+    """Let's Encrypt allows five certificates per week for the same name. Losing
+    /data on every `up --build` would exhaust that in a day and leave the
+    service publicly unreachable until the window rolled over."""
+    caddy = COMPOSE["services"]["caddy"]
+    data_mount = next(m for m in caddy["volumes"] if m.endswith(":/data"))
+
+    assert data_mount.split(":")[0] in COMPOSE["volumes"]
+
+
+def test_the_proxy_does_not_cut_off_a_build_or_a_download():
+    """A build runs for minutes and the APK is ~150 MB. Caddy's default proxy
+    timeouts would give a buyer a gateway error mid-build and a truncated
+    download."""
+    caddyfile = (ROOT / "deploy" / "Caddyfile").read_text(encoding="utf-8")
+
+    assert "read_timeout 30m" in caddyfile
+    assert "write_timeout 30m" in caddyfile
+
+
+def test_the_acme_challenge_matches_the_open_ports():
+    """Port 80 is closed at the cloud firewall, so an HTTP-01 challenge cannot
+    complete. Leaving it enabled costs a failed attempt before the fallback."""
+    caddyfile = (ROOT / "deploy" / "Caddyfile").read_text(encoding="utf-8")
+
+    assert "disable_http_challenge" in caddyfile
+
+
 def test_container_logs_are_bounded():
     """The default json-file driver grows without limit, on a host already
     sized around 1.9 GB of build artifact apiece."""

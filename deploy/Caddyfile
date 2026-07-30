@@ -1,0 +1,49 @@
+# TLS termination in front of the build service.
+#
+# The API itself is bound to 127.0.0.1 on the host and is reached here over the
+# compose network, so this is the only thing on a public port. That matters more
+# than usual: the X-PAYMENT header carries a signed EIP-3009 authorization and
+# the request body is the buyer's product specification, neither of which should
+# cross the network in the clear.
+
+{
+	# Caddy warns without one and ACME accounts are easier to recover with it.
+	# Unset is fine; the certificate is issued either way.
+	email {$ACME_EMAIL:}
+}
+
+{$PUBLIC_HOSTNAME} {
+	tls {
+		issuer acme {
+			# Port 80 is closed at the cloud firewall, so the HTTP-01 challenge
+			# cannot succeed. Saying so up front means Caddy goes straight to
+			# TLS-ALPN-01 on 443 instead of failing an attempt first and
+			# spending a retry on it.
+			disable_http_challenge
+		}
+	}
+
+	# A build is minutes long and an APK is ~150 MB. The defaults would cut both
+	# off: a buyer polling a running build would see a gateway timeout, and the
+	# download would truncate.
+	reverse_proxy api:8000 {
+		transport http {
+			read_timeout 30m
+			write_timeout 30m
+		}
+	}
+
+	# The service answers JSON and serves one binary; nothing here is a browser
+	# document, but the headers cost nothing and a 402 challenge is exactly the
+	# kind of response an intermediary should not be caching or sniffing.
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

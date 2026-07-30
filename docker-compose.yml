@@ -69,6 +69,34 @@ services:
       retries: 5
       start_period: 60s
 
+  # TLS termination and the only thing on a public port. It reaches the API over
+  # the compose network, which is why `api` stays bound to loopback on the host.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and the ACME account live here. Without a persistent volume
+      # every redeploy would request a fresh certificate and burn through Let's
+      # Encrypt's rate limit — five per week for the same name, after which the
+      # service is publicly unreachable for days.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   redis:
     image: redis:8-alpine
     restart: unless-stopped
@@ -87,3 +115,5 @@ services:
 volumes:
   builds:
   redis:
+  caddy_data:
+  caddy_config:
