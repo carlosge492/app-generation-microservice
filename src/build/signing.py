@@ -51,6 +51,8 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.ports.toolchain import sdk_executable
+
 log = logging.getLogger(__name__)
 
 # Both dialects: Kotlin DSL (`signingConfig = signingConfigs.getByName("debug")`)
@@ -146,10 +148,9 @@ def find_apksigner(sdk_root: str | Path | None = None) -> str | None:
         if not build_tools.is_dir():
             continue
         for version in sorted(build_tools.iterdir(), reverse=True):
-            for name in ("apksigner.bat", "apksigner"):
-                candidate = version / name
-                if candidate.exists():
-                    return str(candidate)
+            candidate = sdk_executable(version, "apksigner")
+            if candidate is not None:
+                return candidate
     return shutil.which("apksigner")
 
 

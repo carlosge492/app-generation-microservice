@@ -25,6 +25,7 @@ from pathlib import Path
 
 from src.build.scaffold import ensure_android_scaffold
 from src.build.signing import inspect_signature, unsign_release
+from src.ports.toolchain import sdk_executable
 from src.payments.x402 import require_verified
 from src.prd.schema import PRD
 
@@ -44,10 +45,9 @@ class BuildResult:
 
 def _flutter(flutter_root: str | Path | None) -> str:
     if flutter_root:
-        for candidate in ("flutter.bat", "flutter"):
-            path = Path(flutter_root) / "bin" / candidate
-            if path.exists():
-                return str(path)
+        tool = sdk_executable(Path(flutter_root) / "bin", "flutter")
+        if tool is not None:
+            return tool
     found = shutil.which("flutter")
     if found is None:
         raise RuntimeError(

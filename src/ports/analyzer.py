@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from src.ports.toolchain import sdk_executable
+
 import yaml
 
 
@@ -237,10 +239,9 @@ class FlutterAnalyzer:
 
     def _tool(self, name: str) -> str:
         if self.flutter_root:
-            for candidate in (f"{name}.bat", name):
-                path = self.flutter_root / "bin" / candidate
-                if path.exists():
-                    return str(path)
+            tool = sdk_executable(self.flutter_root / "bin", name)
+            if tool is not None:
+                return tool
             raise ToolchainUnavailable(
                 f"{name!r} not found under {self.flutter_root / 'bin'}"
             )

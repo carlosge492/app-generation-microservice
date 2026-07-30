@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Protocol
 
 from src.ports.analyzer import Diagnostic, ToolchainUnavailable
+from src.ports.toolchain import sdk_executable
 
 # `  D:/path/to/test/foo_test.dart: SomeScreen builds without throwing`
 _FAILING = re.compile(r"^\s*(\S+?\.dart):\s*(.+?)\s*$")
@@ -29,10 +30,9 @@ class FlutterTestRunner:
 
     def _tool(self) -> str:
         if self.flutter_root:
-            for candidate in ("flutter.bat", "flutter"):
-                path = self.flutter_root / "bin" / candidate
-                if path.exists():
-                    return str(path)
+            tool = sdk_executable(self.flutter_root / "bin", "flutter")
+            if tool is not None:
+                return tool
             raise ToolchainUnavailable(f"flutter not found under {self.flutter_root / 'bin'}")
         found = shutil.which("flutter")
         if found is None:
