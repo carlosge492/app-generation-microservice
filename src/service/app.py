@@ -527,6 +527,28 @@ def create_app(
             ),
         }
 
+    @app.get("/builds")
+    def builds_terms(request: Request) -> JSONResponse:
+        """An unpaid GET answers 402 with the terms, not 405.
+
+        Building requires a POST with a PRD, so GET has nothing to do — but
+        x402 clients, crawlers and directory probers all reach for GET first to
+        ask "what does this cost?", and a 405 reads as a broken or non-x402
+        endpoint. A discovery directory rejected verification for exactly this,
+        which would have left the listing ranked last indefinitely.
+        """
+        return JSONResponse(
+            status_code=402,
+            content=challenge(
+                token=request.app.state.token,
+                pay_to=request.app.state.pay_to,
+                max_amount_required=request.app.state.price_atomic,
+                resource=_public_resource_url(request),
+                output_schema=BUILD_OUTPUT_SCHEMA,
+                error="POST a PRD with this header to build; GET only quotes the price",
+            ),
+        )
+
     @app.post("/builds", status_code=202)
     def create_build(
         prd_body: dict[str, Any],

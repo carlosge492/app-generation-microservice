@@ -97,6 +97,22 @@ def test_unpaid_request_is_402_with_a_challenge(client):
     assert PAYMENT_HEADER in body["hint"]
 
 
+def test_an_unpaid_get_on_the_paid_route_quotes_the_price(monkeypatch, tmp_path):
+    """Crawlers, x402 clients and directory probers all GET first.
+
+    Building needs a POST, so GET used to answer 405 — which reads as a broken
+    or non-x402 endpoint rather than as a paid one. A discovery directory
+    refused to verify the listing for precisely this, and an unverified listing
+    ranks last among thousands. The terms are the same ones the POST quotes.
+    """
+    client = _configured_client(monkeypatch, tmp_path)
+
+    unpaid = client.get("/builds")
+
+    assert unpaid.status_code == 402, "a prober reads anything else as not-x402"
+    assert unpaid.json()["accepts"][0]["maxAmountRequired"] == "3000000"
+
+
 def test_the_front_door_answers_humans_and_machines(monkeypatch, tmp_path):
     """The root served `{"detail":"Not Found"}` to everyone who arrived.
 
