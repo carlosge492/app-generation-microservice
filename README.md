@@ -85,7 +85,7 @@ Verified end to end on Base Sepolia — a real transaction, a real APK:
 export X402_TOKEN_CONTRACT=0x036CbD53842c5426634e7929541eC2318f3dCF7e  # USDC
 export X402_CHAIN_ID=84532
 export X402_NETWORK=base-sepolia
-export X402_PRICE_ATOMIC=500000                                       # 0.50 USDC
+export X402_PRICE_ATOMIC=3000000                                      # 3.00 USDC
 export X402_PAY_TO=0xYourReceivingAddress
 export X402_FACILITATOR_URL=https://facilitator.payai.network         # public, no auth
 export FLUTTER_ROOT="C:\flutter"

@@ -169,13 +169,28 @@ def test_the_destination_is_identified_by_its_prd_title():
     assert "CaptureScreen" not in source
 
 
+def test_the_entry_point_is_not_awaited():
+    """`void main()` and `Future<void> main()` are both idiomatic Flutter, and
+    `await` on the first is a compile error — `use_of_void_result` — which fails
+    the entire build rather than just this test.
+
+    Found when Sonnet wrote `void main() async` where it had previously written
+    `Future<void> main() async`: the generated app was fine and the harness's
+    own test would not compile against it. Third bug of this shape, after the
+    missing integration_test dependency and the home-route assumption."""
+    source = _test_source(PRD.model_validate(PRD_BODY))
+
+    assert "app.main();" in source
+    assert "await app.main()" not in source
+
+
 def test_the_app_is_booted_through_its_own_main():
     """Pumping a widget directly would skip the composition root — which is
     exactly where the app-cannot-start bug lived."""
     source = _test_source(PRD.model_validate(PRD_BODY))
 
     assert "import 'package:field_notes/main.dart' as app;" in source
-    assert "await app.main();" in source
+    assert "app.main();" in source
 
 
 def test_the_package_name_comes_from_the_pubspec():
@@ -229,6 +244,14 @@ def test_every_eval_prd_generates_something_parseable():
         if not generated:
             continue
         source = generated["integration_test/navigation_test.dart"]
-        assert source.count("void main()") == 1, path
-        assert source.count("{") == source.count("}"), path
-        assert "testWidgets(" in source, path
+        # Comments stripped first. A comment mentioning `void main()` — this
+        # file's own explanation of why the entry point is not awaited does —
+        # would otherwise be counted as a second entry point. That is the
+        # fourth time today a pattern has matched prose instead of code.
+        code = "\n".join(
+            line for line in source.splitlines()
+            if not line.strip().startswith("//") and not line.strip().startswith("///")
+        )
+        assert code.count("void main()") == 1, path
+        assert code.count("{") == code.count("}"), path
+        assert "testWidgets(" in code, path

@@ -229,7 +229,13 @@ def _push_case(screen: Screen, action: Action, destination: str) -> str:
     return f"""
   testWidgets('{action.name}: {screen.id} -> {action.target} renders',
       (tester) async {{
-    await app.main();
+    // Called without `await` on purpose. A Flutter entry point is idiomatically
+    // declared either `void main()` or `Future<void> main()` — both are
+    // ordinary, and awaiting the first is a compile error
+    // (`use_of_void_result`), which fails the whole build rather than the test.
+    // The settle below gives an async main time to finish initialising before
+    // anything touches the widget tree.
+    app.main();
     await _settle(tester);
 
     final destination = find.text({_dart_literal(destination)});
@@ -254,7 +260,13 @@ def _tap_case(
     return f"""
   testWidgets('{action.name}: a tap on {screen.id} reaches {action.target}',
       (tester) async {{
-    await app.main();
+    // Called without `await` on purpose. A Flutter entry point is idiomatically
+    // declared either `void main()` or `Future<void> main()` — both are
+    // ordinary, and awaiting the first is a compile error
+    // (`use_of_void_result`), which fails the whole build rather than the test.
+    // The settle below gives an async main time to finish initialising before
+    // anything touches the widget tree.
+    app.main();
     await _settle(tester);
 
     final failure = await _tapReaches(
