@@ -472,8 +472,12 @@ def build_work(job: BuildJob):
     settings = _settings()
 
     def run(job: BuildJob) -> None:
+        # Held rather than passed inline: the generator accumulates token usage
+        # across every call it makes for this build, and reading it afterwards
+        # is the only way to know what the build cost.
+        generator = get_generator(settings["generator"])
         app_graph = build_graph(
-            get_generator(settings["generator"]),
+            generator,
             get_analyzer(settings["analyzer"], settings["flutter_root"]),
             max_repairs=settings["max_repairs"],
             test_runner=(
@@ -507,6 +511,13 @@ def build_work(job: BuildJob):
         else:
             job.status = BuildStatus.SUCCEEDED
             job.apk_path = final.get("apk_path") or None
+
+        # Recorded whatever the outcome — a failed build still spent tokens,
+        # and those are the builds whose cost most needs explaining. Offline
+        # generators have no usage to report, hence the getattr.
+        usage = getattr(generator, "usage", None)
+        if usage is not None:
+            job.usage = usage.public()
 
         # Set here, not left to `_execute` after this closure returns.
         # `InMemoryJobStore` hands out the live `BuildJob` object rather than a

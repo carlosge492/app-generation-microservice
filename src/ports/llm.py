@@ -36,6 +36,7 @@ import anthropic
 
 from src.ports.analyzer import Diagnostic
 from src.ports.generator import Plan
+from src.ports.usage import Usage
 from src.prd.schema import PRD
 
 DEFAULT_MODEL = "claude-opus-5"
@@ -192,6 +193,10 @@ class AnthropicGenerator:
         # `os.getenv(name, default)` falls back only on absence, so the empty
         # string would have been passed to the API as the model name.
         self.model = os.getenv("SUPERVISOR_MODEL") or model
+        # Accumulated across every call this generator makes — planning, GenUI,
+        # Logic and each repair pass — so the total is what one app cost, not
+        # what one request cost.
+        self.usage = Usage()
         self.effort = effort
         # `client` exists so the request shape can be exercised without
         # credentials; anthropic.Anthropic() raises at construction without them.
@@ -258,6 +263,13 @@ class AnthropicGenerator:
                 self._unsupported.add(feature)
         else:  # pragma: no cover - exhausted every downgrade
             raise GenerationMalformed("could not construct an acceptable request")
+
+        # Before the outcome checks below, so a refused or truncated response
+        # still counts: those tokens are billed, and a cost record that only
+        # captured successes would understate exactly the builds that went
+        # wrong most expensively.
+        if getattr(message, "usage", None) is not None:
+            self.usage.add(message.usage, self.model)
 
         if message.stop_reason == "refusal":
             detail = getattr(message, "stop_details", None)

@@ -49,6 +49,10 @@ class BuildJob:
     build_dir: str | None = None
     heartbeat_at: datetime | None = None
     settlement_tx: str | None = None
+    # Token counts and an estimated cost for this build, or empty for the
+    # offline generators, which spend nothing. This is the only record of what
+    # a sale cost to fulfil — without it the price is a guess.
+    usage: dict[str, Any] = field(default_factory=dict)
     # The work itself, stored rather than closed over, so a worker that did not
     # accept this build can still run it. See the module docstring.
     prd: dict[str, Any] | None = None
@@ -77,6 +81,10 @@ class BuildJob:
             # that it did, rather than wondering why the log went backwards.
             "attempts": self.attempts,
             "apk_available": bool(self.apk_path and Path(self.apk_path).exists()),
+            # What this build cost to produce. Shown to the buyer as well as
+            # the operator: an M2M buyer deciding whether the price is fair has
+            # the same interest in it that the seller does.
+            "usage": self.usage,
         }
 
     # -- serialisation for a shared store ----------------------------------- #
