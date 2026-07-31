@@ -310,6 +310,54 @@ def create_app(
     if app.state.worker is not None:
         app.state.worker.start()
 
+    @app.get("/.well-known/x402")
+    def x402_manifest(request: Request) -> dict[str, Any]:
+        """What this service sells and what it costs, without buying anything.
+
+        An agent that has to POST a real PRD just to read the price learns the
+        terms from a 402 it provoked. The same `accepts` entry is served here,
+        in the shape the facilitator's discovery listings use, so a crawler or a
+        buyer can decide before it commits to anything.
+        """
+        resource = _public_resource_url(request).replace("/.well-known/x402", "/builds")
+        terms = challenge(
+            token=app.state.token,
+            pay_to=app.state.pay_to,
+            max_amount_required=app.state.price_atomic,
+            resource=resource,
+            output_schema=BUILD_OUTPUT_SCHEMA,
+        )
+        return {
+            "x402Version": terms["x402Version"],
+            "resource": resource,
+            "type": "http",
+            "method": "POST",
+            "accepts": terms["accepts"],
+            "name": "PRD to Flutter APK",
+            "description": (
+                "Compiles a JSON product requirements document into an Android "
+                "APK: Flutter widget tree, Riverpod state, static analysis and a "
+                "packaged build. Payment settles on-chain before the build starts."
+            ),
+            "inputSchema": {
+                "type": "http",
+                "method": "POST",
+                "bodySchema": {"$ref": f"{resource.rsplit('/', 1)[0]}/schema/prd.json"},
+            },
+            "outputSchema": {"type": "json", "schema": BUILD_OUTPUT_SCHEMA},
+            "documentation": f"{resource.rsplit('/', 1)[0]}/docs",
+        }
+
+    @app.get("/schema/prd.json")
+    def prd_schema() -> dict[str, Any]:
+        """The PRD contract, as a JSON Schema an agent can generate against.
+
+        Without this an agent has to infer the document shape from 422 errors,
+        one missing field at a time — which is how it looked from the outside
+        before this existed.
+        """
+        return PRD.model_json_schema()
+
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
         settings = _settings()

@@ -122,6 +122,12 @@ Hard rules:
   invoke behaviour via `ref.read(<name>Provider.notifier)`. You do NOT define
   those providers — the Logic subagent does. Use exactly the provider names
   given to you; inventing a name causes a build failure.
+- If a screen needs a controller or focus node, it becomes a
+  `ConsumerStatefulWidget` with a `ConsumerState` — and then `build` takes
+  `(BuildContext context)` ONLY, reading `ref` as an inherited member. The
+  `build(BuildContext, WidgetRef)` signature belongs to `ConsumerWidget` alone;
+  writing it in a State class fails to compile with a message about overriding
+  `State.build` that says nothing about Riverpod.
 - Standard Material widgets only. Every file must be complete, parseable Dart
   with balanced braces.
 - Always emit lib/ui/app.dart declaring the root MaterialApp and its routes.

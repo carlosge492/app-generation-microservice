@@ -97,6 +97,31 @@ def test_unpaid_request_is_402_with_a_challenge(client):
     assert PAYMENT_HEADER in body["hint"]
 
 
+def test_an_agent_can_learn_the_terms_without_provoking_a_402(monkeypatch, tmp_path):
+    """Discovery has to work before the first request, not as a side effect.
+
+    An agent that must POST a real PRD to find out the price is reading terms
+    off an error it caused. The manifest carries the same `accepts` entry the
+    402 does — the same code path, so the two cannot describe different prices —
+    plus the schema of what it would be buying.
+    """
+    client = _configured_client(monkeypatch, tmp_path)
+
+    manifest = client.get("/.well-known/x402").json()
+    quoted = client.post("/builds", json=PRD_BODY).json()
+
+    assert manifest["accepts"] == quoted["accepts"], \
+        "the advertised terms and the charged terms must be the same object"
+    assert manifest["resource"].endswith("/builds"), \
+        f"the manifest must point at the payable endpoint, not itself"
+    assert manifest["accepts"][0]["asset"].startswith("0x")
+
+    schema = client.get("/schema/prd.json").json()
+    for required in ("app_name", "package_name", "screens"):
+        assert required in schema["properties"], \
+            f"{required} is rejected by the API but absent from the published schema"
+
+
 def _configured_client(monkeypatch, tmp_path, atomic=3_000_000):
     """A service with a real token configured, which is what a buyer meets.
 

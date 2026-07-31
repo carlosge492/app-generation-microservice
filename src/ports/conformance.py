@@ -63,6 +63,7 @@ def check_conformance(prd: PRD, files: dict[str, str]) -> list[Diagnostic]:
     out += _check_lint_package_installed(files)
     out += _check_single_entrypoint(files)
     out += _check_duplicate_declarations(files)
+    out += _check_consumer_state_build_signature(files)
     return out
 
 
@@ -224,6 +225,52 @@ def _check_single_entrypoint(files: dict[str, str]) -> list[Diagnostic]:
                 "error", path, 0, "misplaced_entrypoint",
                 "main() is declared here as well as in lib/main.dart; the "
                 "composition root belongs solely to lib/main.dart",
+            ))
+    return out
+
+
+# A `build` taking both a context and a ref. Correct in a ConsumerWidget, a
+# compile error in a State class — so the class it sits in decides, not the
+# signature. `[\s\S]*?` rather than `.*?` because a build method spans lines.
+_STATE_CLASS = re.compile(
+    r"class\s+(\w+)\s+extends\s+(?:ConsumerState|State)\b[\s\S]*?(?=\nclass\s|\Z)"
+)
+_BUILD_WITH_REF = re.compile(
+    r"\bWidget\s+build\s*\(\s*BuildContext\s+\w+\s*,\s*WidgetRef\s+\w+\s*\)"
+)
+
+
+def _check_consumer_state_build_signature(files: dict[str, str]) -> list[Diagnostic]:
+    """`build(context, ref)` inside a State class.
+
+    The two Riverpod base classes take different signatures: a `ConsumerWidget`
+    receives `(BuildContext, WidgetRef)`, while a `ConsumerState` receives only
+    the context and reads `ref` as an instance member. Writing the first inside
+    the second is a compile error — "more required arguments than those of
+    overridden method 'State.build'" — and it reads as a complaint about
+    overriding rather than about Riverpod, which is why it survives repair.
+
+    It cost a real paid build: three repair passes escalating between the GenUI
+    and Logic agents, $0.41 of tokens, and a buyer who had already been charged.
+    Caught here it is one deterministic diagnostic naming the fix, produced
+    before the toolchain runs at all.
+    """
+    out: list[Diagnostic] = []
+    for path, body in sorted(files.items()):
+        if not path.endswith(".dart"):
+            continue
+        code = _code_only(body)
+        for match in _STATE_CLASS.finditer(code):
+            if not _BUILD_WITH_REF.search(match.group(0)):
+                continue
+            out.append(Diagnostic(
+                "error", path, 0, "consumer_state_build_signature",
+                f"{match.group(1)}.build takes (BuildContext, WidgetRef), but a "
+                f"State class overrides build(BuildContext) only. Drop the "
+                f"WidgetRef parameter and use the inherited `ref` member; the "
+                f"class must extend ConsumerState and its widget "
+                f"ConsumerStatefulWidget. The (context, ref) signature belongs "
+                f"to ConsumerWidget, which is stateless.",
             ))
     return out
 
