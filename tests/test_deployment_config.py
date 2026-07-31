@@ -10,8 +10,11 @@ verification table was proven on, or a `${VAR}` in compose that nothing supplies
 
 from __future__ import annotations
 
+import io
 import re
+import subprocess
 import sys
+import tarfile
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -290,6 +293,33 @@ def test_the_receiving_address_has_no_default():
     wrong address sends every buyer's payment somewhere the operator does not
     control, and it would be indistinguishable from working."""
     assert re.search(r"^X402_PAY_TO=\s*$", ENV_EXAMPLE, re.M)
+
+
+def test_scripts_that_run_on_the_box_are_shipped_with_unix_endings():
+    """`git archive` applies working-tree conversion, so a Windows checkout with
+    core.autocrlf puts CRLF into the tarball that is shipped to Linux.
+
+    `#!/bin/sh\\r` fails as `set: Illegal option -`, which names neither the file
+    nor the reason, and it only happens on the box — every local test passes.
+    Checked against `git archive` itself rather than the file on disk, because
+    the working copy is allowed to hold CRLF; what matters is what ships.
+    """
+    archived = subprocess.run(
+        ["git", "archive", "--format=tar", "HEAD"],
+        cwd=str(ROOT), capture_output=True, check=True,
+    ).stdout
+
+    with tarfile.open(fileobj=io.BytesIO(archived)) as tar:
+        shipped = [
+            member for member in tar.getmembers()
+            if member.isfile() and member.name.endswith((".sh", ".yml", "Caddyfile"))
+        ]
+        assert shipped, "no shell or config files found; this test is matching nothing"
+        for member in shipped:
+            body = tar.extractfile(member).read()
+            assert b"\r\n" not in body, (
+                f"{member.name} ships with CRLF; it will not run on the Linux box"
+            )
 
 
 def test_the_switch_script_and_the_deployment_check_agree_on_every_chain():
