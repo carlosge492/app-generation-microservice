@@ -1,0 +1,11 @@
+# Shell scripts must keep LF endings even on a Windows checkout. Git's autocrlf
+# rewrites them to CRLF, `git archive` ships exactly what is in the working tree,
+# and `#!/bin/sh` with a trailing carriage return fails on Linux as
+# `set: Illegal option -` — an error that names neither the file nor the reason.
+# This deployment ships from a Windows machine to a Linux box every time.
+*.sh text eol=lf
+
+# Same reasoning: these are read by tools inside the Linux container.
+Dockerfile text eol=lf
+*.yml text eol=lf
+Caddyfile text eol=lf
