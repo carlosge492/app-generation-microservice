@@ -27,7 +27,12 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+)
 
 from src.graph.builder import build_graph
 from src.graph.state import initial_state
@@ -38,6 +43,7 @@ from src.payments.x402 import (
     PaymentVerifier,
     X402Verifier,
     challenge,
+    human_amount,
 )
 from src.ports.analyzer import get_analyzer
 from src.ports.generator import get_generator
@@ -186,6 +192,50 @@ BUILD_OUTPUT_SCHEMA: dict[str, object] = {
 }
 
 
+_LANDING_PAGE = """<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PRD to Flutter APK — {price} USDC</title>
+<style>
+  :root {{ color-scheme: light dark; }}
+  body {{ max-width: 44rem; margin: 3rem auto; padding: 0 1.25rem;
+         font: 16px/1.6 system-ui, sans-serif; }}
+  code, pre {{ font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .9em; }}
+  pre {{ padding: .9rem 1rem; overflow-x: auto; border-radius: 6px;
+        background: rgba(127,127,127,.12); }}
+  h1 {{ font-size: 1.6rem; margin-bottom: .2rem; }}
+  .sub {{ opacity: .7; margin-top: 0; }}
+  table {{ border-collapse: collapse; width: 100%; }}
+  td {{ padding: .35rem .6rem .35rem 0; vertical-align: top; }}
+  td:first-child {{ opacity: .7; white-space: nowrap; }}
+</style>
+<h1>PRD to Flutter APK</h1>
+<p class="sub">Send a JSON product requirements document. Get back a compiled
+Android APK. <strong>{price} USDC</strong> per build, on {network}.</p>
+
+<p>Payment uses <a href="https://x402.gitbook.io/x402/">x402</a>: POST without
+payment and the 402 response carries everything needed to sign an EIP-3009
+authorization. The payment settles on-chain before the build starts, and a build
+that fails still tells you why — see <code>diagnostics</code> on the job.</p>
+
+<pre>curl -X POST {base}/builds \\
+     -H 'Content-Type: application/json' \\
+     -d @my-app.prd.json          # 402 with payment terms
+# sign, then repeat with:  -H 'X-Payment: &lt;authorization&gt;'</pre>
+
+<p>What happens: the document is planned into a design, a Flutter widget tree is
+generated, Riverpod state is wired into it, the result is statically analysed and
+repaired until clean, then packaged. Typically 5&ndash;8 minutes.</p>
+
+<table>
+  <tr><td>Payment terms</td><td><a href="{base}/.well-known/x402">/.well-known/x402</a></td></tr>
+  <tr><td>Document schema</td><td><a href="{base}/schema/prd.json">/schema/prd.json</a></td></tr>
+  <tr><td>API reference</td><td><a href="{base}/docs">/docs</a></td></tr>
+  <tr><td>Service status</td><td><a href="{base}/healthz">/healthz</a></td></tr>
+</table>
+"""
+
+
 def _canonical_resource_url() -> str:
     """The service's own public URL for /builds, from configuration.
 
@@ -324,6 +374,41 @@ def create_app(
     )
     if app.state.worker is not None:
         app.state.worker.start()
+
+    @app.get("/robots.txt", include_in_schema=False)
+    def robots() -> PlainTextResponse:
+        """Crawlable on purpose. Being found is the point, and the only thing
+        worth keeping bots out of is the per-job endpoints, which are unguessable
+        ids that cost money to create."""
+        return PlainTextResponse(
+            "User-agent: *\nAllow: /\nDisallow: /builds/\n"
+            f"Sitemap: {_canonical_resource_url().replace('/builds', '/.well-known/x402')}\n"
+        )
+
+    @app.get("/", include_in_schema=False)
+    def index(request: Request):
+        """One page for both audiences.
+
+        A browser gets something readable; anything else gets JSON pointing at
+        the manifest. Until now the root answered `{"detail":"Not Found"}` to
+        everyone, which is what a human, a crawler and an agent all saw first.
+        """
+        price = human_amount(app.state.price_atomic, 6) if app.state.token else "?"
+        network = app.state.token.network if app.state.token else "unconfigured"
+        base = _public_resource_url(request).rstrip("/")
+
+        if "text/html" not in request.headers.get("accept", ""):
+            return {
+                "name": "PRD to Flutter APK",
+                "price_usdc": price,
+                "network": network,
+                "manifest": f"{base}/.well-known/x402",
+                "schema": f"{base}/schema/prd.json",
+                "openapi": f"{base}/openapi.json",
+                "payment": "x402 (EIP-3009); POST /builds returns 402 with terms",
+            }
+
+        return HTMLResponse(_LANDING_PAGE.format(price=price, network=network, base=base))
 
     @app.get("/.well-known/x402")
     def x402_manifest(request: Request) -> dict[str, Any]:

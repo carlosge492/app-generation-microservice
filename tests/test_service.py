@@ -97,6 +97,27 @@ def test_unpaid_request_is_402_with_a_challenge(client):
     assert PAYMENT_HEADER in body["hint"]
 
 
+def test_the_front_door_answers_humans_and_machines(monkeypatch, tmp_path):
+    """The root served `{"detail":"Not Found"}` to everyone who arrived.
+
+    That is what a browser, a crawler and an agent all saw first, on a service
+    whose entire purpose is being found and paid by strangers. Both answers are
+    generated from the live config, so neither can advertise a stale price.
+    """
+    client = _configured_client(monkeypatch, tmp_path)
+
+    page = client.get("/", headers={"accept": "text/html"})
+    assert page.status_code == 200 and "text/html" in page.headers["content-type"]
+    assert "3.00" in page.text, "a visitor cannot see what it costs"
+    assert "{price}" not in page.text, "an unformatted placeholder reached the page"
+
+    machine = client.get("/", headers={"accept": "application/json"}).json()
+    assert machine["price_usdc"] == "3.00"
+    assert machine["manifest"].endswith("/.well-known/x402")
+
+    assert "Disallow: /builds/" in client.get("/robots.txt").text
+
+
 def test_what_is_sent_at_settlement_is_a_usable_catalog_entry(monkeypatch):
     """The settlement body is this service's public listing.
 
