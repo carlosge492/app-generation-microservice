@@ -47,6 +47,25 @@ KEYS_PATH = ROOT / ".x402-testnet.json"
 # from "is it not sepolia", so a new testnet does not silently become one.
 MAINNET_NETWORKS = {"base", "ethereum", "polygon", "avalanche", "arbitrum", "optimism"}
 
+# A token whose chain, contract and EIP-712 domain do not agree rejects every
+# signature a correct buyer produces. These are not recalled — they were read
+# from the facilitator's own discovery listings, where 80 of 80 live
+# Base-mainnet services agree on both the contract and the domain. This table is
+# the single source: `deploy/switch_network.sh` writes the same values into a
+# deployment, and a test holds the two together.
+KNOWN_NETWORKS = {
+    "base": {
+        "chain_id": 8453,
+        "contract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        "domain_name": "USD Coin",
+    },
+    "base-sepolia": {
+        "chain_id": 84532,
+        "contract": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        "domain_name": "USDC",
+    },
+}
+
 
 class Failure(Exception):
     """A deployment problem, phrased for whoever has to fix it."""
@@ -96,24 +115,8 @@ def check_health(base: str, expect_network: str) -> dict:
             "durable_execution is false: a restart or a killed worker loses "
             "builds that have already been paid for."
         )
-    # A token whose chain, contract and EIP-712 domain do not agree rejects
-    # every signature a correct buyer produces. The values below are not
-    # recalled — they were read from the facilitator's own discovery listings,
-    # where 80 of 80 live Base-mainnet services agree on both.
-    known = {
-        "base": {
-            "chain_id": 8453,
-            "contract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-            "domain_name": "USD Coin",
-        },
-        "base-sepolia": {
-            "chain_id": 84532,
-            "contract": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-            "domain_name": "USDC",
-        },
-    }
     token = health.get("token") or {}
-    expected = known.get(str(health.get("network")))
+    expected = KNOWN_NETWORKS.get(str(health.get("network")))
     if expected and token:
         for field, want in expected.items():
             got = token.get(field)

@@ -11,6 +11,7 @@ verification table was proven on, or a `${VAR}` in compose that nothing supplies
 from __future__ import annotations
 
 import re
+import sys
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -289,6 +290,41 @@ def test_the_receiving_address_has_no_default():
     wrong address sends every buyer's payment somewhere the operator does not
     control, and it would be indistinguishable from working."""
     assert re.search(r"^X402_PAY_TO=\s*$", ENV_EXAMPLE, re.M)
+
+
+def test_the_switch_script_and_the_deployment_check_agree_on_every_chain():
+    """The chain constants are written down twice — once in the script that sets
+    them and once in the check that refuses a deployment where they disagree.
+
+    Two copies of a value drift, and this pair drifts silently in the worst
+    direction: the switch script writes the config, the check validates it, so a
+    matching pair of wrong values passes. Both are compared against the same
+    table here, which is the one in `verify_deployment.py`.
+    """
+    sys.path.insert(0, str(ROOT))
+    from scripts.verify_deployment import KNOWN_NETWORKS
+
+    script = (ROOT / "deploy" / "switch_network.sh").read_text(encoding="utf-8")
+    # Only the `set_var` lines: the header comment names both domain values
+    # while explaining the trap, and a substring check would read those.
+    settings = re.findall(r'^\s*set_var\s+"?(\w+)"?\s+"?([^"\n]+?)"?\s*$', script, re.M)
+
+    for network, expected in KNOWN_NETWORKS.items():
+        block = re.search(
+            rf"^\s*{re.escape(network)}\)(.*?)^\s*;;", script, re.M | re.S
+        )
+        assert block, f"{network} has no branch in switch_network.sh"
+        written = dict(re.findall(
+            r'^\s*set_var\s+"?(\w+)"?\s+"?([^"\n]+?)"?\s*$', block.group(1), re.M
+        ))
+        assert written.get("X402_CHAIN_ID") == str(expected["chain_id"])
+        assert written.get("X402_TOKEN_CONTRACT") == expected["contract"]
+        assert written.get("X402_DOMAIN_NAME") == expected["domain_name"], (
+            f"{network}: script writes {written.get('X402_DOMAIN_NAME')!r}, "
+            f"the deployment check requires {expected['domain_name']!r}"
+        )
+
+    assert settings, "no set_var lines parsed; this test is matching nothing"
 
 
 def test_secrets_never_reach_the_image_or_a_commit():
