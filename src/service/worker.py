@@ -204,7 +204,14 @@ class BuildWorker:
             log.error("build %s finished but its lease was gone; result discarded", job.id)
             return False
 
-        job.finished_at = datetime.now(timezone.utc)
+        # Usually already set: the closure that decides success or failure sets
+        # it itself, in the same breath as the terminal status, so that the two
+        # become visible together to anyone reading the job mid-flight. This is
+        # the backstop for the paths that never reach that closure's own
+        # assignment — an exception raised out of it, or a build that returns
+        # without setting a terminal status at all.
+        if job.finished_at is None:
+            job.finished_at = datetime.now(timezone.utc)
         job.heartbeat_at = job.finished_at
         self.store.save(job)
         return True

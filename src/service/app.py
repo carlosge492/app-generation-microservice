@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -466,6 +467,18 @@ def build_work(job: BuildJob):
         else:
             job.status = BuildStatus.SUCCEEDED
             job.apk_path = final.get("apk_path") or None
+
+        # Set here, not left to `_execute` after this closure returns.
+        # `InMemoryJobStore` hands out the live `BuildJob` object rather than a
+        # copy, so the instant `job.status` above becomes terminal, a concurrent
+        # `GET /builds/{id}` can already see it — and pruning below is real
+        # filesystem I/O, wide enough for that poll to land in the gap and
+        # observe a "succeeded" build with `finished_at` still null. Setting
+        # both together, with nothing but attribute assignment between them,
+        # closes it. `_execute` only fills this in for the paths that never
+        # reach here: an exception, or a build that exits without setting a
+        # terminal status at all.
+        job.finished_at = datetime.now(timezone.utc)
 
         # The buyer wants the APK; the other ~2 GB is a Gradle output tree that
         # nothing will ever read again. Pruning here rather than on a timer

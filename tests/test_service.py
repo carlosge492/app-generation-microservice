@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.payments.x402 import PAYMENT_HEADER, DevPaymentVerifier
-from src.service.app import _verified_prd, create_app
+from src.service.app import _verified_prd, build_work, create_app
 from src.service.jobs import BuildStatus, InMemoryJobStore
 from src.service.queue import InMemoryBuildQueue
 from src.service.worker import BuildWorker
@@ -228,3 +228,37 @@ def test_work_that_reports_no_outcome_is_treated_as_failure():
 
     assert job.status is BuildStatus.FAILED
     assert "without reporting an outcome" in job.failure
+
+
+def test_a_terminal_status_never_becomes_visible_without_finished_at(
+    monkeypatch, tmp_path
+):
+    """`finished_at` must be set in the same breath as the terminal status.
+
+    `InMemoryJobStore` hands out the live `BuildJob`, so the moment the build
+    closure sets `status` to a terminal value a concurrent `GET /builds/{id}`
+    can see it — and artifact pruning runs after that, doing real filesystem
+    work. `_execute` filling in `finished_at` only once the closure returns
+    leaves a window where the API reports a succeeded build with a null
+    `finished_at`, which CI's Linux runner hit on the first push and this
+    machine reproduced 40 times out of 40.
+
+    Calling the closure directly tests the invariant without racing anything:
+    when it returns, both fields are already set.
+    """
+    monkeypatch.setenv("SUPERVISOR_GENERATOR", "template")
+    monkeypatch.setenv("SUPERVISOR_ANALYZER", "stub")
+    monkeypatch.setenv("SUPERVISOR_RUN_TESTS", "0")
+
+    store = InMemoryJobStore()
+    job = store.create("Timestamps", prd=PRD_BODY)
+    job.paid = True
+    job.build_dir = str(tmp_path / job.id)
+
+    build_work(job)(job)
+
+    assert job.status in {BuildStatus.SUCCEEDED, BuildStatus.FAILED}
+    assert job.finished_at is not None, (
+        "the build closure must stamp finished_at itself; leaving it to the "
+        "worker exposes a terminal status with a null timestamp"
+    )
