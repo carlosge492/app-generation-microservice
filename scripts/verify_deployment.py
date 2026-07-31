@@ -223,12 +223,18 @@ def buy_a_build(base: str, health: dict, timeout: float, keys_path: Path = KEYS_
         terms = body["accepts"][0]
         pay_to = terms["payTo"]
         price = int(terms["maxAmountRequired"])
+        network = terms["network"]
+        # Spec fields only. This script used to read `chainId` and
+        # `verifyingContract`, which the spec does not define and the service
+        # invented — so the pair agreed with each other while no third-party
+        # client could pay at all. The chain id comes from a registry keyed on
+        # the network name, which is what a real client has to do too.
         token = TokenConfig(
-            chain_id=int(terms["chainId"]),
-            verifying_contract=terms["verifyingContract"],
+            chain_id=KNOWN_NETWORKS[network]["chain_id"],
+            verifying_contract=terms["asset"],
             domain_name=terms["extra"]["name"],
             domain_version=terms["extra"]["version"],
-            network=terms["network"],
+            network=network,
         )
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise Failure(

@@ -7,6 +7,7 @@ the payment verifier is injected, so these run anywhere.
 from __future__ import annotations
 
 import json
+import re
 import time
 from decimal import Decimal
 
@@ -96,6 +97,53 @@ def test_unpaid_request_is_402_with_a_challenge(client):
     assert PAYMENT_HEADER in body["hint"]
 
 
+def _configured_client(monkeypatch, tmp_path, atomic=3_000_000):
+    """A service with a real token configured, which is what a buyer meets.
+
+    The plain `client` fixture runs the dev verifier with no token at all, so its
+    challenge legitimately omits every chain field — a useful default for the
+    rest of the suite, and useless for checking what the challenge must contain.
+    """
+    monkeypatch.setenv("SUPERVISOR_GENERATOR", "template")
+    monkeypatch.setenv("X402_TOKEN_CONTRACT", "0x036CbD53842c5426634e7929541eC2318f3dCF7e")
+    monkeypatch.setenv("X402_CHAIN_ID", "84532")
+    monkeypatch.setenv("X402_NETWORK", "base-sepolia")
+    monkeypatch.setenv("X402_PAY_TO", "0x000000000000000000000000000000000000dEaD")
+    monkeypatch.setenv("X402_PRICE_ATOMIC", str(atomic))
+    monkeypatch.setattr("src.service.app.BUILD_ROOT", tmp_path)
+    return TestClient(create_app())
+
+
+def test_the_challenge_carries_every_field_the_x402_spec_requires(monkeypatch, tmp_path):
+    """Written from the v1 spec's field table, not from what we happen to emit.
+
+    The first version of this challenge was validated only against our own
+    client, and the two agreed with each other rather than with the standard:
+    `asset` held the symbol "USDC" where the spec requires the token contract
+    address, required `maxTimeoutSeconds` was absent, and `resource` was a path
+    where a URL is specified. Nothing failed, because the only client that ever
+    read it was the one written alongside it — so the service was unpayable by
+    every third-party agent while all 369 tests passed.
+    """
+    body = _configured_client(monkeypatch, tmp_path).post("/builds", json=PRD_BODY).json()
+    assert body["x402Version"] == 1, "the facilitator's /supported lists v1 only"
+
+    terms = body["accepts"][0]
+    for field in ("scheme", "network", "maxAmountRequired", "asset", "payTo",
+                  "resource", "description", "maxTimeoutSeconds"):
+        assert field in terms, f"the spec requires {field}"
+
+    assert terms["asset"].startswith("0x") and len(terms["asset"]) == 42, \
+        f"asset must be the token contract address, got {terms['asset']!r}"
+    assert terms["maxAmountRequired"].isdigit(), "atomic units, as a string"
+    assert terms["resource"].startswith("http"), \
+        f"resource must be a URL a buyer can fetch, got {terms['resource']!r}"
+    assert isinstance(terms["maxTimeoutSeconds"], int)
+    # v2 defines `amount` as atomic units. Emitting a decimal price under that
+    # name would read to a spec-following client as three millionths of a dollar.
+    assert "amount" not in terms
+
+
 @pytest.mark.parametrize("atomic", [3_000_000, 1_250_000, 10_000_000])
 def test_the_advertised_price_is_the_price_that_is_enforced(monkeypatch, tmp_path, atomic):
     """The quote states the price twice — once for a human, once for the
@@ -110,18 +158,18 @@ def test_the_advertised_price_is_the_price_that_is_enforced(monkeypatch, tmp_pat
     stale constant and the real one agree by coincidence, and this test passes
     with the bug fully present — which is how it first read as green.
     """
-    monkeypatch.setenv("SUPERVISOR_GENERATOR", "template")
-    monkeypatch.setenv("X402_PRICE_ATOMIC", str(atomic))
-    monkeypatch.setattr("src.service.app.BUILD_ROOT", tmp_path)
-    client = TestClient(
-        create_app(verifier=DevPaymentVerifier(SECRET), store=InMemoryJobStore())
-    )
+    client = _configured_client(monkeypatch, tmp_path, atomic)
 
     accepts = client.post("/builds", json=PRD_BODY).json()["accepts"][0]
 
     assert int(accepts["maxAmountRequired"]) == atomic
-    assert Decimal(accepts["amount"]) * (10 ** 6) == atomic, (
-        f"advertises {accepts['amount']} USDC but enforces {atomic} atomic units"
+    # The price in dollars is prose now — there is no spec field for it that does
+    # not already mean something else — but it is still derived from the enforced
+    # figure, so the two cannot drift apart.
+    stated = re.search(r"\$([\d.]+) USDC", accepts["description"])
+    assert stated, f"no price stated in {accepts['description']!r}"
+    assert Decimal(stated.group(1)) * (10 ** 6) == atomic, (
+        f"advertises {stated.group(1)} USDC but enforces {atomic} atomic units"
     )
 
 
@@ -262,9 +310,11 @@ def test_challenge_tells_the_buyer_how_to_pay(monkeypatch):
 
     accepts = body["accepts"][0]
     assert accepts["network"] == "base-sepolia"
-    assert accepts["chainId"] == 84532
     assert accepts["payTo"] == "0x000000000000000000000000000000000000dEaD"
-    assert accepts["verifyingContract"].lower().startswith("0x036cbd")
+    # The token contract lives in `asset`, which is the field the spec tells a
+    # buyer to read. It used to be in `verifyingContract`, a name this service
+    # invented, with the symbol "USDC" sitting in `asset` instead.
+    assert accepts["asset"].lower().startswith("0x036cbd")
     assert accepts["extra"]["version"] == "2"
     assert body["error"], "the buyer should be told why this attempt failed"
 

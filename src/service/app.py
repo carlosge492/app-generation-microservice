@@ -165,6 +165,42 @@ def _env(name: str, default: str = "") -> str:
     return os.getenv(name) or default
 
 
+# What a buyer receives, advertised in the challenge so an agent can tell whether
+# this service is worth paying before it pays. `outputSchema` is an optional v1
+# field and the discovery listings that carry one are the ones an agent can use
+# without a human first reading prose.
+BUILD_OUTPUT_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string", "description": "poll GET /builds/{id}"},
+        "status": {"enum": ["queued", "running", "succeeded", "failed"]},
+        "apk_available": {
+            "type": "boolean",
+            "description": "when true, GET /builds/{id}/apk returns the APK",
+        },
+        "settlement_tx": {"type": "string", "description": "on-chain settlement hash"},
+        "log": {"type": "array", "items": {"type": "string"}},
+        "diagnostics": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["id", "status"],
+}
+
+
+def _public_resource_url(request: Request) -> str:
+    """The URL a buyer used, not the one this process sees.
+
+    Behind the TLS proxy the service's own view of itself is `http://api:8000`
+    on the compose network, which is unreachable for everyone else — a challenge
+    naming it would be unactionable, and `resource` is a field buyers are
+    expected to be able to fetch.
+    """
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+    forwarded_host = request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+    scheme = forwarded_proto or request.url.scheme
+    host = forwarded_host or request.headers.get("host") or request.url.netloc
+    return f"{scheme}://{host}{request.url.path}"
+
+
 def _token_from_env() -> TokenConfig | None:
     contract = _env("X402_TOKEN_CONTRACT")
     chain_id = _env("X402_CHAIN_ID")
@@ -402,6 +438,11 @@ def create_app(
                     pay_to=request.app.state.pay_to,
                     max_amount_required=request.app.state.price_atomic,
                     error=getattr(verifier, "last_error", None),
+                    # The spec asks for the URL of the protected resource, not
+                    # its path. Taken from the request so it is right behind the
+                    # TLS proxy, where the service's own view is http://api:8000.
+                    resource=_public_resource_url(request),
+                    output_schema=BUILD_OUTPUT_SCHEMA,
                 ),
             )
 

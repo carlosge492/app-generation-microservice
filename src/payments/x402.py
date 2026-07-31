@@ -234,43 +234,60 @@ def human_amount(atomic: int, decimals: int) -> str:
     return f"{whole}.{frac.rstrip('0').ljust(2, '0')}"
 
 
+DEFAULT_PAYMENT_TIMEOUT_SECONDS = 300
+
+
 def challenge(
-    asset: str = "USDC",
     *,
     token: TokenConfig | None = None,
     pay_to: str | None = None,
     max_amount_required: int | None = None,
     resource: str = "/builds",
     error: str | None = None,
+    output_schema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The body accompanying a 402, telling the buyer exactly how to pay.
 
-    A buyer cannot construct an EIP-3009 authorization without the recipient,
-    the token contract, the chain and the domain used to sign — so a challenge
-    that omits them is unactionable, and the client would have to guess at the
-    very fields where a wrong guess produces a valid signature for the wrong
-    thing.
+    This is x402 version 1, matching `specs/x402-specification-v1.md`, because
+    v1 is what the facilitator settles — its `/supported` lists no other version.
+
+    Every field name here is the spec's, not one that reads naturally. The first
+    version of this function was written against our own client and the two
+    agreed with each other rather than with the standard: `asset` carried the
+    symbol "USDC" where the spec requires the token contract address, the
+    required `maxTimeoutSeconds` was missing, `resource` was a path rather than a
+    URL, and a human-readable `amount` of "3.00" sat where v2 defines `amount` as
+    *atomic units* — a client reading it as specified would have signed for three
+    millionths of a dollar. No third-party client could have paid this service.
     """
-    accepts: dict[str, Any] = {
-        "scheme": "exact",
-        "description": "One PRD compiled to a Flutter APK",
-        "resource": resource,
-    }
-    if max_amount_required is not None:
-        decimals = token.asset_decimals if token is not None else 6
-        accepts["amount"] = human_amount(max_amount_required, decimals)
-    accepts["asset"] = asset
+    accepts: dict[str, Any] = {"scheme": "exact"}
+
     if token is not None:
-        accepts.update({
-            "network": token.network,
-            "chainId": token.chain_id,
-            "verifyingContract": token.verifying_contract,
-            "extra": {"name": token.domain_name, "version": token.domain_version},
-        })
-    if pay_to is not None:
-        accepts["payTo"] = pay_to
+        accepts["network"] = token.network
     if max_amount_required is not None:
         accepts["maxAmountRequired"] = str(max_amount_required)
+    if token is not None:
+        # The contract address, per the spec — the buyer needs it to sign, and
+        # this is the field they are told to read it from.
+        accepts["asset"] = token.verifying_contract
+    if pay_to is not None:
+        accepts["payTo"] = pay_to
+
+    accepts["resource"] = resource
+    accepts["description"] = "One PRD compiled to a Flutter APK"
+    if max_amount_required is not None and token is not None:
+        # The price in dollars belongs in prose. It is not a protocol field: the
+        # only spec field it could plausibly occupy is `amount`, which means
+        # atomic units, and putting "3.00" there misreads as $0.000003.
+        price = human_amount(max_amount_required, token.asset_decimals)
+        accepts["description"] += f" (${price} USDC)"
+    accepts["mimeType"] = "application/json"
+    accepts["outputSchema"] = output_schema
+    accepts["maxTimeoutSeconds"] = DEFAULT_PAYMENT_TIMEOUT_SECONDS
+    if token is not None:
+        # Scheme-specific: for `exact` on EVM this is the EIP-712 domain the
+        # token signs under, which differs between mainnet and testnet USDC.
+        accepts["extra"] = {"name": token.domain_name, "version": token.domain_version}
 
     body: dict[str, Any] = {
         "x402Version": 1,
