@@ -11,6 +11,7 @@ verification table was proven on, or a `${VAR}` in compose that nothing supplies
 from __future__ import annotations
 
 import re
+from fnmatch import fnmatch
 from pathlib import Path
 
 import yaml
@@ -290,10 +291,25 @@ def test_the_receiving_address_has_no_default():
     assert re.search(r"^X402_PAY_TO=\s*$", ENV_EXAMPLE, re.M)
 
 
-def test_secrets_never_reach_the_image():
-    """`.x402-testnet.json` holds a funded private key and `.env` the Anthropic
-    key. Both are in the build context directory."""
-    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
-    for secret in (".env", ".x402-testnet.json"):
-        assert secret in dockerignore
-    assert ".env.deploy" in (ROOT / ".gitignore").read_text(encoding="utf-8")
+def test_secrets_never_reach_the_image_or_a_commit():
+    """Key files hold funded private keys and `.env` the Anthropic key, and all
+    of them sit in the build context directory.
+
+    Matched with real pathspecs rather than by substring: the patterns are globs
+    now, so `".x402-testnet.json" in text` would report a file as ignored on the
+    strength of a filename mentioned in a comment — which is how four separate
+    checks in this repo have already been fooled. A mainnet payer file is the
+    case that matters; it is created after these lines are written, and nothing
+    prompts anyone to come back and add it.
+    """
+    named = [".env", ".env.deploy", ".x402-testnet.json", ".x402-mainnet.json"]
+
+    for ignore_file in (".dockerignore", ".gitignore"):
+        patterns = [
+            line.strip()
+            for line in (ROOT / ignore_file).read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        for secret in named:
+            assert any(fnmatch(secret, pattern) for pattern in patterns), \
+                f"{secret} is not excluded by {ignore_file}"

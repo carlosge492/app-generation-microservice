@@ -10,8 +10,11 @@ __pycache__/
 # Agent output — build artifacts, not source
 generated_apps/
 
-# Throwaway testnet keys. Never reuse on mainnet.
-.x402-testnet.json
+# Payer private keys. The testnet one is throwaway and must never be reused on
+# mainnet; a mainnet payer file holds a key with real money behind it. The glob
+# covers both, so a new key file is ignored the moment it is created rather than
+# when someone remembers to add it.
+.x402-*.json
 
 # Runtime logs from the emulator suite, not part of its config.
 emulator/*-debug.log

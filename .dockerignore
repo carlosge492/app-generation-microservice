@@ -3,10 +3,12 @@
 generated_apps/
 emulator/
 
-# Keys. `.x402-testnet.json` holds a funded testnet private key; it is gitignored
-# and must not reach an image either.
+# Keys. These hold funded private keys — the testnet payer, and any mainnet
+# payer file created for a live purchase. Gitignored, and they must not reach an
+# image either. Globbed so a new key file is excluded on creation.
 .env
-.x402-testnet.json
+.env.deploy
+.x402-*.json
 
 .git/
 .github/

@@ -43,6 +43,9 @@ from src.payments.x402 import PAYMENT_HEADER  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 PRD_PATH = ROOT / "examples" / "todo_app.prd.json"
 KEYS_PATH = ROOT / ".x402-testnet.json"
+# Networks where a payment is real and irreversible. Named rather than inferred
+# from "is it not sepolia", so a new testnet does not silently become one.
+MAINNET_NETWORKS = {"base", "ethereum", "polygon", "avalanche", "arbitrum", "optimism"}
 
 
 class Failure(Exception):
@@ -189,7 +192,7 @@ def check_payment_is_required(base: str) -> None:
         )
 
 
-def buy_a_build(base: str, health: dict, timeout: float) -> Path:
+def buy_a_build(base: str, health: dict, timeout: float, keys_path: Path = KEYS_PATH) -> Path:
     """Pay for real and wait for the APK. Spends testnet USDC."""
     import secrets
 
@@ -198,12 +201,12 @@ def buy_a_build(base: str, health: dict, timeout: float) -> Path:
 
     from src.payments.eip3009 import Authorization, TokenConfig, typed_data
 
-    if not KEYS_PATH.exists():
+    if not keys_path.exists():
         raise Failure(
-            f"--pay needs a funded testnet payer in {KEYS_PATH.name}; see the "
-            f"README on the testnet setup"
+            f"--pay needs a funded payer key in {keys_path.name}; see the "
+            f"README on the testnet setup, or pass --payer-keys"
         )
-    keys = json.loads(KEYS_PATH.read_text(encoding="utf-8"))
+    keys = json.loads(keys_path.read_text(encoding="utf-8"))
     payer = Account.from_key(keys["payer"]["private_key"])
 
     # Every chain parameter comes out of the deployment's own 402, never out of
@@ -303,9 +306,29 @@ def main() -> int:
                         help="the network the deployment is expected to charge on; "
                              "a mismatch is treated as a failure rather than a note")
     parser.add_argument("--pay", action="store_true",
-                        help="buy a real build with the funded testnet key")
+                        help="buy a real build, signing with the payer key file")
+    parser.add_argument("--payer-keys", type=Path, default=KEYS_PATH,
+                        help="JSON holding the payer's private key. Defaults to the "
+                             "testnet file, which has no mainnet funds — a mainnet "
+                             "run needs its own file and its own key")
+    parser.add_argument("--yes-spend-real-money", action="store_true",
+                        help="required by --pay on a mainnet network, where the "
+                             "payment is real USDC and nothing can undo it")
     parser.add_argument("--build-timeout", type=float, default=1800)
     args = parser.parse_args()
+
+    # A testnet run is free and repeatable; a mainnet run moves money that no
+    # amount of retrying gets back. The flag exists so that spending it is a
+    # thing someone typed, never a thing a command did by default.
+    if args.pay and args.network in MAINNET_NETWORKS and not args.yes_spend_real_money:
+        print(f"\nRefusing: --pay on {args.network} spends real USDC. Re-run with "
+              f"--yes-spend-real-money if that is what you mean.")
+        return 1
+    if args.pay and args.network in MAINNET_NETWORKS and args.payer_keys == KEYS_PATH:
+        print(f"\nRefusing: --pay on {args.network} would sign with "
+              f"{KEYS_PATH.name}, the throwaway testnet key. Pass --payer-keys "
+              f"pointing at a mainnet payer.")
+        return 1
 
     base = args.url.rstrip("/")
     print(f"\nDeployment check — {base}\n" + "=" * 61)
@@ -325,7 +348,7 @@ def main() -> int:
 
         apk = None
         if args.pay:
-            apk = buy_a_build(base, health, args.build_timeout)
+            apk = buy_a_build(base, health, args.build_timeout, args.payer_keys)
     except Failure as failure:
         print(f"\nFAILED: {failure}")
         return 1

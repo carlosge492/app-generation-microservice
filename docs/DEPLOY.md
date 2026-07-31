@@ -141,6 +141,33 @@ poetry run python scripts/verify_deployment.py http://127.0.0.1:8000 --pay
 It signs with the funded testnet payer, waits for the APK and downloads it.
 Testnet USDC, so a mistake costs nothing real.
 
+### The same check on mainnet
+
+On a mainnet network `--pay` moves real USDC and nothing reverses it, so it
+refuses twice by default: once until `--yes-spend-real-money` is passed, and
+again if the key file is still the throwaway testnet one.
+
+Make the payer file yourself — it holds a private key, it is gitignored by the
+`.x402-*.json` glob, and it should never be copied to the server or pasted into
+a chat:
+
+```bash
+poetry run python scripts/verify_deployment.py https://37-27-249-33.sslip.io --network base --pay --yes-spend-real-money --payer-keys .x402-mainnet.json
+```
+
+```json
+{"payer": {"private_key": "0x…", "address": "0x…"}}
+```
+
+**Pay from the receiving wallet and the purchase costs nothing.** The verifier
+checks only that the authorization is addressed to `X402_PAY_TO`; it places no
+constraint on who sends it. With payer and recipient the same address the USDC
+returns to where it started and the facilitator pays the gas, while the run still
+exercises the whole path a stranger would take — EIP-712 signature, facilitator
+submission, on-chain settlement, build, APK. It needs the price in USDC present
+in the wallet to authorize against, and a few cents of ETH is not required
+because the facilitator submits the transaction.
+
 ## 8. Only then, TLS and a public address
 
 Caddy is in the compose stack for this. It terminates TLS on 443 and reaches
