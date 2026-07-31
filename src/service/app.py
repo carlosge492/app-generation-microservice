@@ -58,6 +58,7 @@ from src.service.queue import (
     InMemoryBuildQueue,
     RedisBuildQueue,
 )
+from src.service.ratelimit import RateLimiter, client_identity
 from src.service.artifacts import (
     DEFAULT_RETENTION_SECONDS,
     keep_only_the_artifact,
@@ -196,6 +197,13 @@ def create_app(
     app.state.pay_to = os.getenv("X402_PAY_TO")
     app.state.price_atomic = int(os.getenv("X402_PRICE_ATOMIC", "500000"))
 
+    # Shares the Redis client below when there is one, so the limit holds across
+    # processes rather than per-worker.
+    app.state.rate_limiter = RateLimiter(
+        limit=int(os.getenv("BUILDS_RATE_LIMIT", "20")),
+        window_seconds=int(os.getenv("BUILDS_RATE_WINDOW_SECONDS", "60")),
+    )
+
     client = _redis() if (store is None or queue is None) else None
     if store is not None:
         app.state.store = store
@@ -208,6 +216,9 @@ def create_app(
         app.state.queue = queue
     else:
         app.state.queue = RedisBuildQueue(client) if client else InMemoryBuildQueue()
+
+    if client is not None:
+        app.state.rate_limiter.redis = client
 
     # An API process builds as well as accepts by default, so a single-container
     # deployment keeps working with no extra moving parts. Set
@@ -265,6 +276,14 @@ def create_app(
             # traceback is the least useful moment to do it.
             "queue_depth": _queue_depth(app.state.queue),
             "embedded_worker": app.state.worker is not None,
+            # Surfaced for the same reason as the rest of this payload: an
+            # operator should be able to see that the accepting endpoint is
+            # bounded without reading the source or the environment.
+            "builds_rate_limit": (
+                f"{app.state.rate_limiter.limit}/"
+                f"{app.state.rate_limiter.window_seconds}s"
+                if app.state.rate_limiter.enabled else "unlimited"
+            ),
         }
 
     @app.post("/builds", status_code=202)
@@ -273,6 +292,31 @@ def create_app(
         request: Request,
         x_payment: str | None = Header(default=None, alias=PAYMENT_HEADER),
     ) -> JSONResponse:
+        # Before anything expensive. Verifying a payment means two network round
+        # trips to the facilitator from a synchronous endpoint, so a flood of
+        # junk authorizations exhausts the thread pool and takes the service
+        # down for the buyers who did pay.
+        limiter = request.app.state.rate_limiter
+        retry_after = limiter.check(
+            client_identity(
+                request.headers.get("x-forwarded-for"),
+                request.client.host if request.client else None,
+            )
+        )
+        if retry_after is not None:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "too many requests",
+                    "detail": (
+                        f"at most {limiter.limit} build requests per "
+                        f"{limiter.window_seconds}s from one address"
+                    ),
+                    "retry_after": retry_after,
+                },
+                headers={"Retry-After": str(retry_after)},
+            )
+
         # Validate before charging: a malformed PRD is the buyer's mistake to
         # fix, and taking payment for work that cannot start would be theft.
         try:

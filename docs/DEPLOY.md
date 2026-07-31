@@ -127,8 +127,8 @@ This is the check worth running. A container can come up, answer HTTP and still
 be unsellable — taking payments it never settles, losing paid builds on restart,
 or falling back to the dev shared secret because a token variable was
 misspelled. The script reads `/healthz`, refuses the deployment when it says any
-of those, and names the fix. It was verified against four deliberately broken
-deployments and caught all four.
+of those, and names the fix. It was verified against five deliberately broken
+deployments and caught all five.
 
 Then buy a real build, which is the only check that proves the deployment can do
 the thing it charges for:

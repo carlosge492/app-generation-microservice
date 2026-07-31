@@ -143,6 +143,8 @@ down a process at a time.
 
 | Variable | Default | What it is for |
 | --- | --- | --- |
+| `BUILDS_RATE_LIMIT` | `20` | `POST /builds` per address per window; `0` disables |
+| `BUILDS_RATE_WINDOW_SECONDS` | `60` | the window that limit applies over |
 | `BUILD_WORKER_EMBEDDED` | `1` | whether the API process also builds |
 | `BUILD_LEASE_SECONDS` | `300` | how long a silent worker keeps its job |
 | `BUILD_HEARTBEAT_SECONDS` | `30` | how often a working worker says so |
@@ -151,6 +153,26 @@ down a process at a time.
 `/healthz` reports `durable_execution`, which is true only when the queue *and*
 the job store are both shared — a Redis queue over an in-memory job store loses
 the record the build would be resumed from.
+
+### Why the accepting endpoint is throttled
+
+The x402 gate stops anyone getting a *free* build, so this is not about theft. It
+is the cost of **refusing**: `POST /builds` carrying a payment header makes the
+service call the facilitator's `/verify` and then `/settle`, two network round
+trips with a 60-second timeout, from a synchronous endpoint. A few hundred
+concurrent requests with junk authorizations exhaust the thread pool and the
+service stops answering anyone — including the buyers who paid. So the limit is
+on that endpoint only; polling a running build and downloading an APK are cheap
+and legitimately frequent, and throttling them would punish correct behaviour.
+
+**Identifying the caller is the part that fails quietly.** Behind the TLS proxy
+every request arrives from Caddy's address on the compose network, so keying on
+the socket peer puts every buyer in the world into one bucket — a limiter that
+looks configured while blocking either everyone or nobody. The client is the
+**rightmost** `X-Forwarded-For` entry, because Caddy appends the peer it actually
+saw to whatever the caller sent. Taking the leftmost, which is the more common
+convention, would let a caller supply their own header and mint a fresh identity
+per request; there is a test that fails on exactly that.
 
 ### Deploying it
 
@@ -192,7 +214,8 @@ losing paid builds on restart, or falling back to the dev shared secret because
 a token variable was misspelled. `/healthz` was built to make each of those
 visible in one line, and `verify_deployment.py` refuses the deployment when it
 sees them. It was itself checked against four deliberately broken deployments —
-no Redis, no facilitator, no token config, wrong chain — and caught all four
+no Redis, no facilitator, no token config, wrong chain, no rate limit — and
+caught all five
 with the fix named in the message. `--pay` goes further and buys a real build
 with the testnet key, which is the only check that proves the deployment can do
 the thing it charges for.
@@ -368,7 +391,8 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Release build is unsigned, not debug-signed | real `--release` build, `apksigner` | ✅ verified unsigned |
 | The artifact is signable by the buyer | signed with a throwaway keystore | ✅ verifies against their cert |
 | Play upload | — | ❌ needs a Play account and a listing |
-| A misconfigured deployment is refused | 4 broken services, real HTTP | ✅ caught all 4, fix named |
+| A misconfigured deployment is refused | 5 broken services, real HTTP | ✅ caught all 5, fix named |
+| The accepting endpoint is bounded | limiter + endpoint tests | ✅ 21 tests, both backends |
 | The deployment image builds | Hetzner VM, Ubuntu 26.04, amd64 | ✅ 7.71 GB, first attempt |
 | A buyer pays and receives an APK | live deployment, Base Sepolia | ✅ real tx, 151 MB APK |
 | The toolchain resolves on Linux | the deployed build | ✅ was broken; see below |
@@ -570,7 +594,7 @@ export CHROME_EXECUTABLE=~/chrome-for-testing/chrome/win64-150.0.7871.124/chrome
 says otherwise, and the failure it gives for a chromedriver on any other port
 names 4444 rather than the port it was asked for.
 
-311 unit tests; eval sweep 11/11 against real analysis and widget tests;
+332 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout

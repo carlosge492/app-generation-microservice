@@ -92,6 +92,13 @@ def check_health(base: str, expect_network: str) -> dict:
             "durable_execution is false: a restart or a killed worker loses "
             "builds that have already been paid for."
         )
+    if health.get("builds_rate_limit") in (None, "unlimited"):
+        problems.append(
+            "builds_rate_limit is unlimited: POST /builds verifies payment over "
+            "two facilitator round trips from a synchronous endpoint, so a flood "
+            "of junk authorizations exhausts the thread pool and the service "
+            "stops answering the buyers who did pay."
+        )
     if problems:
         raise Failure("\n  - ".join(["/healthz reports a service that is not sellable:"] + problems))
     return health
@@ -252,6 +259,7 @@ def main() -> int:
             f"settlement {health['settlement']}")
         log(f"durability job store {health['job_store']}, "
             f"durable_execution {health['durable_execution']}")
+        log(f"throttling  {health['builds_rate_limit']} per address on /builds")
         log(f"builds     {health['generator']} generator, "
             f"{health['build_mode']} mode, "
             f"embedded worker {health['embedded_worker']}")
