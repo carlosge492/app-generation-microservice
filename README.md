@@ -393,6 +393,7 @@ Honest status, because "it compiles" and "it works" are different claims:
 | Play upload | — | ❌ needs a Play account and a listing |
 | A misconfigured deployment is refused | 5 broken services, real HTTP | ✅ caught all 5, fix named |
 | The accepting endpoint is bounded | limiter + endpoint tests | ✅ 21 tests, both backends |
+| The suite runs on Linux, not just Windows | GitHub Actions matrix | ⚠️ written, never executed — no remote |
 | The deployment image builds | Hetzner VM, Ubuntu 26.04, amd64 | ✅ 7.71 GB, first attempt |
 | A buyer pays and receives an APK | live deployment, Base Sepolia | ✅ real tx, 151 MB APK |
 | The toolchain resolves on Linux | the deployed build | ✅ was broken; see below |
@@ -594,7 +595,7 @@ export CHROME_EXECUTABLE=~/chrome-for-testing/chrome/win64-150.0.7871.124/chrome
 says otherwise, and the failure it gives for a chromedriver on any other port
 names 4444 rather than the port it was asked for.
 
-332 unit tests; eval sweep 11/11 against real analysis and widget tests;
+339 unit tests; eval sweep 11/11 against real analysis and widget tests;
 a debug APK built end to end from a payment-verified PRD.
 
 ## Layout

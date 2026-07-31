@@ -1,0 +1,99 @@
+# The suite has only ever been run by hand, on Windows. Both halves of that
+# matter, and the second one shipped a bug to a paying buyer: four call sites
+# resolved the Flutter launcher by taking `flutter.bat` first, which is right on
+# Windows and picks an unrunnable batch file on Linux. 299 tests, an eval sweep
+# and a full APK packaging run all passed, because every one of them ran on the
+# platform where the bug is invisible.
+#
+# So the unit job is a matrix. The Linux leg is not redundancy — it is the only
+# thing here that exercises the platform the service actually deploys on.
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+# A superseded run tells you nothing you want to know.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # a Windows-only failure is exactly the interesting case
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Before setup-python, whose `cache: poetry` needs the lock resolver on PATH.
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: poetry
+
+      - name: Install dependencies
+        run: poetry install --no-interaction
+
+      # No Flutter, no Android SDK, no Redis daemon: every subprocess call is
+      # monkeypatched and Redis is fakeredis, so the suite is hermetic. If that
+      # stops being true this step is where it surfaces.
+      - name: Run tests
+        run: poetry run pytest -q
+
+  eval-sweep:
+    name: eval sweep (real flutter analyze)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: poetry
+
+      - name: Install dependencies
+        run: poetry install --no-interaction
+
+      # Pinned to the version every compile claim in the README was made
+      # against. `flutter analyze` rather than `dart analyze` because it runs
+      # `pub get` first; without a resolved package config every
+      # `package:flutter/...` import reports as an unresolved URI and the real
+      # diagnostics are buried.
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.44.8"
+          channel: stable
+          cache: true
+
+      - name: Sanity-check the toolchain
+        run: flutter --version
+
+      # The whole promise of this project is that generated code compiles, so a
+      # CI that never runs the real analyzer would be checking everything except
+      # the claim. FlutterAnalyzer falls back to PATH when given no root, which
+      # is what the action sets up. The template generator needs no API key and
+      # costs nothing.
+      - name: Eval sweep
+        run: poetry run python evals/run.py --analyzer dart
+
+      - name: Keep the generated apps on a failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-apps
+          path: generated_apps/evals/
+          retention-days: 7

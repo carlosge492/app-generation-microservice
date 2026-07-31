@@ -9,6 +9,7 @@ emulator/
 .x402-testnet.json
 
 .git/
+.github/
 .pytest_cache/
 **/__pycache__/
 *.pyc
