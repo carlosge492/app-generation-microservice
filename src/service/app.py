@@ -152,17 +152,30 @@ def _redis():
     return redis.Redis.from_url(url, decode_responses=True)
 
 
+def _env(name: str, default: str = "") -> str:
+    """Read an environment variable, treating empty as unset.
+
+    Compose passes an optional variable as `${NAME:-}`, which puts an *empty
+    string* in the container rather than leaving it out. `os.getenv(name,
+    default)` falls back only on absence, so the empty string wins and the
+    default never applies — `int("")` raises at startup, and an empty EIP-712
+    domain name silently rejects every buyer signature. Both are worse than the
+    unset case they were meant to cover.
+    """
+    return os.getenv(name) or default
+
+
 def _token_from_env() -> TokenConfig | None:
-    contract = os.getenv("X402_TOKEN_CONTRACT")
-    chain_id = os.getenv("X402_CHAIN_ID")
+    contract = _env("X402_TOKEN_CONTRACT")
+    chain_id = _env("X402_CHAIN_ID")
     if not contract or not chain_id:
         return None
     return TokenConfig(
         chain_id=int(chain_id),
         verifying_contract=contract,
-        domain_name=os.getenv("X402_DOMAIN_NAME", "USDC"),
-        domain_version=os.getenv("X402_DOMAIN_VERSION", "2"),
-        network=os.getenv("X402_NETWORK", "base-sepolia"),
+        domain_name=_env("X402_DOMAIN_NAME", "USDC"),
+        domain_version=_env("X402_DOMAIN_VERSION", "2"),
+        network=_env("X402_NETWORK", "base-sepolia"),
     )
 
 
@@ -173,17 +186,17 @@ def _verifier_from_env() -> tuple[PaymentVerifier, str, TokenConfig | None]:
     explicitly configured and no real token is, and the fallback refuses.
     """
     token = _token_from_env()
-    pay_to = os.getenv("X402_PAY_TO")
+    pay_to = _env("X402_PAY_TO")
     if token is not None and pay_to:
-        price = int(os.getenv("X402_PRICE_ATOMIC", "500000"))
+        price = int(_env("X402_PRICE_ATOMIC", "500000"))
         client = _redis()
-        facilitator_url = os.getenv("X402_FACILITATOR_URL")
+        facilitator_url = _env("X402_FACILITATOR_URL")
         return (
             X402Verifier(
                 token=token,
                 pay_to=pay_to,
                 min_value=price,
-                clock_skew=int(os.getenv("X402_CLOCK_SKEW", "0")),
+                clock_skew=int(_env("X402_CLOCK_SKEW", "0")),
                 nonces=(
                     RedisNonceStore(client) if client is not None
                     else InMemoryNonceStore()
@@ -191,8 +204,8 @@ def _verifier_from_env() -> tuple[PaymentVerifier, str, TokenConfig | None]:
                 facilitator=(
                     HttpFacilitator(
                         facilitator_url, token, pay_to, price,
-                        api_key=os.getenv("X402_FACILITATOR_KEY"),
-                        timeout=float(os.getenv("X402_SETTLE_TIMEOUT", "60")),
+                        api_key=_env("X402_FACILITATOR_KEY") or None,
+                        timeout=float(_env("X402_SETTLE_TIMEOUT", "60")),
                     ) if facilitator_url else None
                 ),
             ),

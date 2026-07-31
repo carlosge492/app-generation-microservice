@@ -35,6 +35,19 @@ services:
       X402_NETWORK: ${X402_NETWORK}
       X402_PRICE_ATOMIC: ${X402_PRICE_ATOMIC}
       X402_PAY_TO: ${X402_PAY_TO}
+      # The EIP-712 domain the token signs under. Base Sepolia's test USDC uses
+      # "USDC" and Base mainnet's uses "USD Coin", so a mainnet deployment that
+      # sets this in .env.deploy and finds it has no effect rejects every
+      # payment. That is not hypothetical — it happened here, and only the
+      # deployment check caught it.
+      X402_DOMAIN_NAME: ${X402_DOMAIN_NAME:-}
+      X402_DOMAIN_VERSION: ${X402_DOMAIN_VERSION:-}
+      # Operational tuning, all optional. Listed because a variable the compose
+      # file does not name is simply not in the container: the code falls back
+      # to its default and nothing reports the discrepancy.
+      X402_CLOCK_SKEW: ${X402_CLOCK_SKEW:-}
+      X402_SETTLE_TIMEOUT: ${X402_SETTLE_TIMEOUT:-}
+      X402_FACILITATOR_KEY: ${X402_FACILITATOR_KEY:-}
       # Without a facilitator the service accepts signed promises it never
       # settles; /healthz says `settlement: verification-only` when that is so.
       X402_FACILITATOR_URL: ${X402_FACILITATOR_URL}

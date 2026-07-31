@@ -183,6 +183,58 @@ def test_the_settings_that_decide_cost_and_output_reach_the_container():
         assert name in API_ENV, f"{name} never reaches the container"
 
 
+APP_SOURCE = (ROOT / "src" / "service" / "app.py").read_text(encoding="utf-8")
+# The dev stand-in's secret, deliberately absent from compose: passing it would
+# let a production deployment fall back to the verifier that accepts unsigned
+# promises, which is the one thing the payment gate exists to prevent.
+NOT_FOR_THE_CONTAINER = {"X402_SHARED_SECRET"}
+
+
+def test_every_payment_setting_the_service_reads_reaches_the_container():
+    """Generalises the two variables that have already been lost this way.
+
+    A name the compose file does not list is simply not in the container, and
+    the code falls back to its own default in silence. That cost a mainnet
+    deployment its EIP-712 domain — the service ran, looked healthy, and would
+    have rejected every buyer signature. Enumerating the reads instead of the
+    known-bad names is the point: a variable added later is covered on the day
+    it is added, not after it has been debugged from the wrong end.
+    """
+    read = {
+        match.group(1)
+        for match in re.finditer(r'_?env\(\s*"(X402_[A-Z0-9_]+)"', APP_SOURCE)
+    }
+    assert read, "no X402 settings found; this test is matching nothing"
+
+    missing = read - set(API_ENV) - NOT_FOR_THE_CONTAINER
+    assert not missing, f"read by the service but never passed to it: {sorted(missing)}"
+
+
+def test_optional_settings_survive_being_passed_as_an_empty_string():
+    """The other half of the same mistake, and the more damaging half.
+
+    `${NAME:-}` does not mean "omit when unset" — it puts an empty string in the
+    container. `os.getenv(name, default)` falls back only on *absence*, so the
+    empty string wins: `int("")` raises before the service can serve anything,
+    and an empty domain name rejects every signature with no default to catch
+    it. Both are strictly worse than the unset case the `:-` was added for.
+    """
+    optional = {
+        match.group(1)
+        for match in re.finditer(r"\$\{(X402_[A-Z0-9_]+):-\}", (ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    }
+    assert optional, "no empty-defaulted X402 settings found; this test is matching nothing"
+
+    unsafe = [
+        name for name in optional
+        if re.search(rf'os\.getenv\(\s*"{name}"', APP_SOURCE)
+    ]
+    assert not unsafe, (
+        f"passed as '' but read with os.getenv's positional default, which only "
+        f"applies when the name is absent: {sorted(unsafe)}"
+    )
+
+
 def test_an_unset_model_is_not_passed_as_an_empty_string():
     """`${SUPERVISOR_MODEL:-}` puts an empty string in the container, and
     `os.getenv(name, default)` falls back only on absence — so the generator
