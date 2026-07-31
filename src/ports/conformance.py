@@ -66,6 +66,40 @@ def check_conformance(prd: PRD, files: dict[str, str]) -> list[Diagnostic]:
     return out
 
 
+# A file that merely *declares* where screens live, in any of the dialects a
+# generator might reach for. These are excluded from counting as evidence that
+# something navigates, because the whole bug being checked for is a screen that
+# appears in the route declarations and nowhere else.
+#
+# Only `routes:` was recognised until Opus 5 wrote `onGenerateRoute` instead.
+# Its routes.dart then counted as "something navigates here", and the check went
+# silent — verified against the real Opus app with every navigation call deleted,
+# where it reported nothing at all. A check that cannot fail is not a check, and
+# this one had been vacuous for the generator the service ships with by default.
+_DECLARES_ROUTES = re.compile(
+    r"\broutes\s*:"            # MaterialApp(routes: {...})
+    r"|\bonGenerateRoute\b"    # MaterialApp(onGenerateRoute:) and the factory
+    r"|\bRouteSettings\b"      # a factory switching on settings.name
+    r"|\bGoRoute\s*\("         # go_router, which Haiku reached for
+)
+
+# `//` that is not the tail of a `://` scheme, so a URL in a string survives.
+_LINE_COMMENT = re.compile(r"(?<!:)//.*$", re.M)
+
+
+def _code_only(body: str) -> str:
+    """Dart with its line comments removed.
+
+    Every pattern in this module asks "does the code do X", and a comment
+    *saying* X is not the code doing it. Both directions bite: a comment
+    mentioning a screen would satisfy the reachability search, and a comment
+    containing the text `routes:` made a file classify as a route table and drop
+    out of the search entirely. The second is not hypothetical — a comment
+    written in this repo, explaining this very check, did exactly that.
+    """
+    return _LINE_COMMENT.sub("", body)
+
+
 def _check_navigation_reachable(prd: PRD, files: dict[str, str]) -> list[Diagnostic]:
     """A declared `navigate` action must actually be able to go somewhere.
 
@@ -83,9 +117,12 @@ def _check_navigation_reachable(prd: PRD, files: dict[str, str]) -> list[Diagnos
     bug had.
     """
     out: list[Diagnostic] = []
+    code = {
+        path: _code_only(body) for path, body in files.items()
+        if path.startswith("lib/ui/")
+    }
     routes_table = {
-        path for path, body in files.items()
-        if path.startswith("lib/ui/") and re.search(r"\broutes\s*:", body)
+        path for path, body in code.items() if _DECLARES_ROUTES.search(body)
     }
 
     for screen in prd.screens:
@@ -101,15 +138,22 @@ def _check_navigation_reachable(prd: PRD, files: dict[str, str]) -> list[Diagnos
             # otherwise match and make every unreachable screen look reachable.
             declares_target = re.compile(rf"\bclass\s+{re.escape(widget)}\b")
             reachable_from = "\n".join(
-                body for path, body in files.items()
-                if path.startswith("lib/ui/")
-                and path not in routes_table
+                body for path, body in code.items()
+                if path not in routes_table
                 and not declares_target.search(body)
             )
 
             if re.search(rf"""['"]/?{re.escape(slug)}['"]""", reachable_from):
                 continue
             if re.search(rf"\b{re.escape(widget)}\s*\(", reachable_from):
+                continue
+            # A named constant for the route, e.g. `Routes.today`. Opus 5 routes
+            # entirely through these — `Navigator.pushNamed(context, route)` with
+            # the path arriving as a constant — so a search for the literal
+            # '/today' or for `TodayScreen(` finds neither, and a working app
+            # with a navigation drawer gets reported unreachable. Matching the
+            # member name keeps the check as loose about *how* as it claims.
+            if re.search(rf"\.\s*{re.escape(camel(action.target))}\b", reachable_from):
                 continue
             out.append(Diagnostic(
                 "error", f"lib/ui/{snake(screen.id)}_screen.dart", 0,

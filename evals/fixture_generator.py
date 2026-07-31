@@ -96,6 +96,7 @@ _OBSERVATIONS = """import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../providers/observations_repository.dart';
+import 'app.dart';
 
 class ObservationsView extends ConsumerWidget {
   const ObservationsView({super.key});
@@ -115,6 +116,20 @@ class ObservationsView extends ConsumerWidget {
         ),
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (e, _) => Center(child: Text('$e')),
+      ),
+      // Reaches the capture page through the route constant rather than a
+      // literal, which is the point of this fixture: correct Flutter that
+      // agrees with none of TemplateGenerator's conventions.
+      //
+      // This was missing until 2026-07-31, so the fixture had exactly the bug
+      // `unreachable_screen` exists to catch — /capture declared in the route
+      // factory and nothing navigating to it — and the check could not see it,
+      // because it only recognised a `routes:` map as a route declaration and
+      // this app uses onGenerateRoute. A reference model of correct code that
+      // is quietly incorrect is worse than no reference model.
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => Navigator.pushNamed(context, AppRoutes.capture),
+        child: const Icon(Icons.add),
       ),
     );
   }

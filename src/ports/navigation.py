@@ -147,12 +147,27 @@ Finder _tappables() => find.byWidgetPredicate(
       description: 'tappable widget',
     );
 
-/// Put a fresh instance of [route] on top, whatever happened before.
-Future<void> _open(WidgetTester tester, String route) async {
+/// Show the screen [title] belongs to, and say whether it worked.
+///
+/// The route is assumed to be `'/<screen id>'`, which is what the PRD implies.
+/// The **home** screen is the exception: `'/'` is the conventional name for it
+/// in Flutter, and an app that files it there answers a push of `'/<id>'` with
+/// whatever its `onGenerateRoute` returns for an unknown name — frequently a
+/// placeholder rather than an error. Opus generated exactly that, a "Route not
+/// found" Scaffold, so this walked onto an empty page and reported the target
+/// unreachable when the app was perfectly navigable.
+///
+/// Popping to the first route is therefore tried first, and the named push only
+/// if the wanted screen is not already the one showing.
+Future<bool> _open(WidgetTester tester, String route, Finder title) async {
   _navigator(tester).popUntil((existing) => existing.isFirst);
   await _settle(tester);
+  if (title.evaluate().isNotEmpty) {
+    return true; // it is the home screen; there is no route to push
+  }
   _navigator(tester).pushNamed(route);
   await _settle(tester);
+  return title.evaluate().isNotEmpty;
 }
 
 /// Tap the affordances on [source] one at a time, looking for one that arrives
@@ -163,10 +178,16 @@ Future<void> _open(WidgetTester tester, String route) async {
 Future<String> _tapReaches(
   WidgetTester tester,
   String source,
+  String sourceTitle,
   String target,
   Finder title,
 ) async {
-  await _open(tester, source);
+  final sourceFinder = find.text(sourceTitle);
+  if (!await _open(tester, source, sourceFinder)) {
+    return 'could not get to $source to start from: neither the first route nor '
+        'a push of $source shows "$sourceTitle", so this says nothing about '
+        'whether $target is reachable';
+  }
   final total = _tappables().evaluate().length;
   if (total == 0) {
     return 'nothing on $source is tappable, so the target cannot be reached '
@@ -179,7 +200,7 @@ Future<String> _tapReaches(
 
   final budget = total < _tapBudget ? total : _tapBudget;
   for (var i = 0; i < budget; i++) {
-    await _open(tester, source);
+    await _open(tester, source, sourceFinder);
     final candidates = _tappables();
     if (i >= candidates.evaluate().length) {
       break;
@@ -211,19 +232,24 @@ def _push_case(screen: Screen, action: Action, destination: str) -> str:
     await app.main();
     await _settle(tester);
 
-    _navigator(tester).pushNamed('/{action.target}');
-    await _settle(tester);
+    final destination = find.text({_dart_literal(destination)});
+    // `_open` rather than a bare push, because the home screen is
+    // conventionally filed at '/' and pushing '/<id>' for it lands on whatever
+    // the app returns for an unknown route.
+    await _open(tester, '/{action.target}', destination);
 
     expect(
-      find.text({_dart_literal(destination)}),
+      destination,
       findsWidgets,
-      reason: 'pushing /{action.target} did not show the {action.target} screen; '
-          'the route is declared but the destination does not render',
+      reason: 'neither the first route nor a push of /{action.target} showed the '
+          '{action.target} screen; it is declared but does not render',
     );
   }});"""
 
 
-def _tap_case(screen: Screen, action: Action, destination: str) -> str:
+def _tap_case(
+    screen: Screen, action: Action, destination: str, source_title: str
+) -> str:
     """A user on the source screen can get to the target by tapping."""
     return f"""
   testWidgets('{action.name}: a tap on {screen.id} reaches {action.target}',
@@ -234,6 +260,7 @@ def _tap_case(screen: Screen, action: Action, destination: str) -> str:
     final failure = await _tapReaches(
       tester,
       '/{screen.id}',
+      {_dart_literal(source_title)},
       '/{action.target}',
       find.text({_dart_literal(destination)}),
     );
@@ -262,7 +289,7 @@ def build_navigation_test(prd: PRD, files: dict[str, str]) -> dict[str, str]:
                 # skipping beats emitting a test that cannot compile.
                 continue
             cases.append(_push_case(screen, action, destination))
-            cases.append(_tap_case(screen, action, destination))
+            cases.append(_tap_case(screen, action, destination, screen.title))
 
     if not cases:
         return {}

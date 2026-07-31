@@ -45,7 +45,7 @@ def test_one_case_per_declared_navigate_action():
     assert expected, "the example PRD declares navigation"
     for source_id, target in expected:
         assert f"{source_id} -> {target}" in source
-        assert f"_navigator(tester).pushNamed('/{target}');" in source
+        assert f"await _open(tester, '/{target}', destination);" in source
 
 
 def test_each_action_gets_both_a_push_case_and_a_tap_case():
@@ -101,7 +101,9 @@ def test_every_tap_attempt_restarts_from_the_source_screen():
     source = _test_source(PRD.model_validate(PRD_BODY))
 
     loop = source.split("for (var i = 0; i < budget; i++) {", 1)[1]
-    assert loop.index("await _open(tester, source);") < loop.index("tester.tap(")
+    assert loop.index("await _open(tester, source, sourceFinder);") < loop.index(
+        "tester.tap("
+    )
 
 
 def test_settling_is_bounded():
@@ -112,6 +114,40 @@ def test_settling_is_bounded():
 
     assert "const Duration(seconds: 5)," in source
     assert "await tester.pumpAndSettle();" not in source
+
+
+def test_the_home_screen_is_not_assumed_to_live_at_its_own_route():
+    """The bug Opus 5 exposed, and the only one this whole exercise was for.
+
+    `'/'` is the conventional Flutter name for the home screen. Opus filed
+    `inbox` there and gave `onGenerateRoute` a default branch rendering a
+    "Route not found" placeholder — so pushing `'/inbox'` produced a page that
+    was neither an error nor the screen, and the test tapped around it and
+    reported a perfectly navigable app unreachable. `TemplateGenerator`'s
+    `initialRoute: '/observations'` is the unusual convention; the check had
+    over-fitted to it.
+
+    Both halves therefore pop to the first route before pushing anything."""
+    source = _test_source(PRD.model_validate(PRD_BODY))
+
+    assert "popUntil((existing) => existing.isFirst)" in source
+    # The push must come *after* the check that the screen is already showing,
+    # or the home case pushes an unknown route before ever looking.
+    body = source.split("Future<bool> _open(", 1)[1]
+    assert body.index("if (title.evaluate().isNotEmpty)") < body.index("pushNamed(route)")
+
+
+def test_a_tap_case_knows_which_screen_it_starts_from():
+    """Without the source screen's own title there is no way to tell "the app
+    put home somewhere else" from "the target really is unreachable" — the two
+    produced identical output before, and one of them is a false accusation."""
+    prd = PRD.model_validate(PRD_BODY)
+    source = _test_source(prd)
+
+    for screen in prd.screens:
+        for action in screen.actions:
+            if action.kind == "navigate" and action.target:
+                assert f"'/{screen.id}',\n      '{screen.title}'," in source
 
 
 def test_the_tap_budget_reaches_the_generated_dart_as_a_number():

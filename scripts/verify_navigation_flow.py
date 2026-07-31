@@ -80,6 +80,14 @@ PRD_PATH = ROOT / "evals" / "prds" / "many_screens.prd.json"
 CHROMEDRIVER_PORT = 4445
 WEB_PORT = 7366
 
+# A healthy drive of this suite takes two to three minutes. `flutter drive`
+# hangs here intermittently — observed with the web server listening, Chrome
+# holding four established connections to it, chromedriver reporting a live
+# session, and the tool's own process using 0.015 seconds of CPU across 23
+# minutes — so the wait is bounded rather than left to run until someone
+# notices. Generous enough that a slow machine is never mistaken for a hang.
+DRIVE_TIMEOUT_SECONDS = 900
+
 # The affordance a generator might have used. The mutation looks for the
 # innermost one of these enclosing the navigation call, so it does not depend on
 # which the generator picked — but it does have to recognise it, and says so
@@ -222,25 +230,46 @@ def drive(flutter: str, build_dir: Path, target: str, log_to: Path) -> tuple[boo
     fails for the same uninteresting reason. They are `demo-` values against an
     emulator, so nothing here can reach a real project.
     """
-    proc = subprocess.run(
-        [
-            flutter, "drive",
-            "--driver=test_driver/integration_test.dart",
-            f"--target=integration_test/{target}",
-            "-d", "chrome", "--browser-name=chrome",
-            f"--driver-port={CHROMEDRIVER_PORT}",
-            f"--web-port={WEB_PORT}",
-            f"--dart-define=FIRESTORE_EMULATOR=127.0.0.1:{FIRESTORE_PORT}",
-            f"--dart-define=FIREBASE_PROJECT_ID={PROJECT_ID}",
-            "--dart-define=FIREBASE_API_KEY=demo-key",
-            "--dart-define=FIREBASE_APP_ID=1:1:web:demo",
-            "--dart-define=FIREBASE_MESSAGING_SENDER_ID=1",
-        ],
-        cwd=str(build_dir), capture_output=True, text=True, check=False,
-        encoding="utf-8", errors="replace",
-    )
-    output = (proc.stdout or "") + (proc.stderr or "")
-    log_to.write_text(output, encoding="utf-8")
+    command = [
+        flutter, "drive",
+        "--driver=test_driver/integration_test.dart",
+        f"--target=integration_test/{target}",
+        "-d", "chrome", "--browser-name=chrome",
+        f"--driver-port={CHROMEDRIVER_PORT}",
+        f"--web-port={WEB_PORT}",
+        f"--dart-define=FIRESTORE_EMULATOR=127.0.0.1:{FIRESTORE_PORT}",
+        f"--dart-define=FIREBASE_PROJECT_ID={PROJECT_ID}",
+        "--dart-define=FIREBASE_API_KEY=demo-key",
+        "--dart-define=FIREBASE_APP_ID=1:1:web:demo",
+        "--dart-define=FIREBASE_MESSAGING_SENDER_ID=1",
+    ]
+
+    # Streamed to the log as it arrives, rather than captured and written at the
+    # end. `flutter drive` hangs here occasionally — the browser connects, the
+    # web server serves, and then nothing finishes — and with captured output
+    # there is no way to see where it stopped, because the output only lands
+    # when the process exits, which is precisely what is not happening. Watch it
+    # with `tail -f` on the path this returns.
+    with open(log_to, "w", encoding="utf-8", errors="replace") as sink:
+        proc = subprocess.Popen(
+            command, cwd=str(build_dir), stdout=sink,
+            stderr=subprocess.STDOUT, text=True,
+            encoding="utf-8", errors="replace",
+        )
+        try:
+            proc.wait(timeout=DRIVE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            # An unbounded wait turns a hung browser into a hung script, which
+            # is how this cost two twenty-minute waits before anyone recognised
+            # it. Killing it leaves a log that ends where the hang began.
+            proc.kill()
+            proc.wait(timeout=30)
+            sink.write(
+                f"\n\n*** verify_navigation_flow.py killed `flutter drive` after "
+                f"{DRIVE_TIMEOUT_SECONDS}s: it had not finished. ***\n"
+            )
+
+    output = log_to.read_text(encoding="utf-8", errors="replace")
     return proc.returncode == 0 and "All tests passed" in output, output
 
 

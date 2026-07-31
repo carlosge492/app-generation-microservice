@@ -61,6 +61,62 @@ def test_conformance_is_clean_on_model_style_code(prd, generated):
     assert found == [], [f"{d.code}: {d.message}" for d in found]
 
 
+def test_unreachable_screen_still_fires_on_an_ongenerateroute_app(prd, generated):
+    """The check must not go quiet just because routes are declared in a factory.
+
+    It excludes route *declarations* from counting as navigation, because a
+    screen listed in the routes table and reached from nowhere is the exact bug
+    it exists to catch. That exclusion only recognised a `routes:` map until
+    Opus 5 wrote `onGenerateRoute` instead — its route file then counted as
+    "something navigates here" and the check reported nothing on an app where
+    nothing did. Verified against the real Opus output before this was written.
+
+    The fixture generator uses `onGenerateRoute` too, which is why it is the
+    right app to prove it on.
+    """
+    ui, logic = generated
+    files = {**ui, **logic}
+
+    # Strip every reference to the destination outside the route factory, which
+    # is what a genuinely unreachable screen looks like. Deleting only the
+    # `Navigator.pushNamed` call would leave `AppRoutes.capture` behind, and the
+    # check is deliberately loose about *how* navigation happens.
+    mutant = {
+        path: (
+            "\n".join(
+                line for line in body.splitlines()
+                if "AppRoutes." not in line and "Navigator.push" not in line
+            )
+            if path != "lib/ui/app.dart" else body
+        )
+        for path, body in files.items()
+    }
+
+    found = [d for d in check_conformance(prd, mutant) if d.code == "unreachable_screen"]
+    assert found, "nothing navigates to /capture and the check said nothing"
+
+
+def test_conformance_reads_code_rather_than_comments(prd, generated):
+    """A comment saying a thing is not the code doing it.
+
+    Both directions have bitten. A comment mentioning a screen would satisfy the
+    reachability search; and a comment containing the text `routes:` made a file
+    classify as a route table and drop out of that search entirely — which is
+    how a comment written in this repo, explaining this very check, turned it
+    off for the file it was written in.
+    """
+    ui, logic = generated
+    files = {**ui, **logic}
+
+    commented = dict(files)
+    commented["lib/ui/observations_page.dart"] = (
+        "// routes: this comment must not make the file look like a route table\n"
+        + commented["lib/ui/observations_page.dart"]
+    )
+
+    assert check_conformance(prd, commented) == check_conformance(prd, files)
+
+
 def test_logic_may_use_the_ordinary_flutter_layout(prd, tmp_path):
     """Logic owns everything under lib/ that is not the widget tree.
 
