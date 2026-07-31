@@ -283,6 +283,21 @@ def create_app(
                 else "verification-only"
             ),
             "network": app.state.token.network if app.state.token else None,
+            # The EIP-712 domain the service verifies signatures against. On
+            # the wire this is the difference between accepting a buyer's
+            # payment and rejecting every one of them: Base Sepolia's test USDC
+            # signs under the name "USDC", Base mainnet's under "USD Coin", and
+            # a mismatch fails every signature while looking like a broken
+            # deployment rather than a one-word config error.
+            "token": (
+                {
+                    "contract": app.state.token.verifying_contract,
+                    "domain_name": app.state.token.domain_name,
+                    "domain_version": app.state.token.domain_version,
+                    "chain_id": app.state.token.chain_id,
+                }
+                if app.state.token else None
+            ),
             "job_store": app.state.store_backend,
             # In-memory anything is single-process. Saying so here is cheaper
             # than someone discovering it from a duplicated build.

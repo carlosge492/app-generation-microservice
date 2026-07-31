@@ -92,6 +92,39 @@ def check_health(base: str, expect_network: str) -> dict:
             "durable_execution is false: a restart or a killed worker loses "
             "builds that have already been paid for."
         )
+    # A token whose chain, contract and EIP-712 domain do not agree rejects
+    # every signature a correct buyer produces. The values below are not
+    # recalled — they were read from the facilitator's own discovery listings,
+    # where 80 of 80 live Base-mainnet services agree on both.
+    known = {
+        "base": {
+            "chain_id": 8453,
+            "contract": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "domain_name": "USD Coin",
+        },
+        "base-sepolia": {
+            "chain_id": 84532,
+            "contract": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "domain_name": "USDC",
+        },
+    }
+    token = health.get("token") or {}
+    expected = known.get(str(health.get("network")))
+    if expected and token:
+        for field, want in expected.items():
+            got = token.get(field)
+            if isinstance(want, str) and isinstance(got, str):
+                matches = got.lower() == want.lower()
+            else:
+                matches = got == want
+            if not matches:
+                problems.append(
+                    f"token {field} is {got!r} but {health.get('network')} uses "
+                    f"{want!r}. Every buyer signature is computed over the token's "
+                    f"real domain, so a mismatch here rejects all of them — which "
+                    f"reads as a broken deployment rather than a config error."
+                )
+
     if health.get("generator_ready") is False:
         problems.append(
             f"generator_ready is false: the deployment is set to the "

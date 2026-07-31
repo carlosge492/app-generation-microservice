@@ -163,6 +163,17 @@ def test_the_acme_challenge_matches_the_open_ports():
     assert "disable_http_challenge" in caddyfile
 
 
+def test_the_mainnet_domain_name_is_documented_where_it_is_needed():
+    """`X402_DOMAIN_NAME` defaults to "USDC", which is correct for Base Sepolia
+    and wrong for Base mainnet, where USDC's EIP-712 domain name is "USD Coin".
+    A deployment that changes the chain and contract but not the domain rejects
+    every buyer signature. The example file is where someone reads the mainnet
+    values, so it is where that has to be said."""
+    assert "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" in ENV_EXAMPLE
+    assert "X402_DOMAIN_NAME=USD Coin" in ENV_EXAMPLE
+    assert "X402_CHAIN_ID=8453" in ENV_EXAMPLE
+
+
 def test_the_settings_that_decide_cost_and_output_reach_the_container():
     """A variable the compose file does not pass simply is not there, and the
     code falls back to its own default without saying so. For SUPERVISOR_MODEL
