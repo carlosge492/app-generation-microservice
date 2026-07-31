@@ -97,6 +97,46 @@ def test_unpaid_request_is_402_with_a_challenge(client):
     assert PAYMENT_HEADER in body["hint"]
 
 
+def test_what_is_sent_at_settlement_is_a_usable_catalog_entry(monkeypatch):
+    """The settlement body is this service's public listing.
+
+    A facilitator catalogs an endpoint the first time it settles a payment for
+    it, reading the entry out of `paymentRequirements` — there is no separate
+    registration call, and no second chance that does not involve another
+    payment. A `resource` of "/builds" would enter a 25,000-entry public index
+    as an unresolvable path, and an entry without `outputSchema` gives an agent
+    nothing to match against but prose.
+    """
+    from src.payments.eip3009 import Authorization, TokenConfig, VerifiedPayment
+    from src.payments.facilitator import HttpFacilitator
+
+    monkeypatch.setenv("PUBLIC_HOSTNAME", "example.test")
+    token = TokenConfig(chain_id=8453, verifying_contract="0x" + "ab" * 20,
+                        domain_name="USD Coin", network="base")
+    facilitator = HttpFacilitator(
+        "https://facilitator.invalid", token,
+        pay_to="0x" + "cd" * 20,
+        price_atomic=3_000_000,
+        resource="https://example.test/builds",
+        output_schema={"type": "object"},
+    )
+    payment = VerifiedPayment(
+        authorization=Authorization(
+            sender="0x" + "11" * 20, recipient="0x" + "cd" * 20,
+            value=3_000_000, valid_after=0, valid_before=0, nonce=b"\x00" * 32,
+        ),
+        token=token, raw_header="", payload={},
+    )
+
+    listed = facilitator._body(payment)["paymentRequirements"]
+
+    assert listed["resource"].startswith("https://"), \
+        f"the catalog would list {listed['resource']!r}, which no agent can fetch"
+    assert listed["outputSchema"], "an entry with no schema is one agents cannot use"
+    assert listed["asset"].startswith("0x"), "the catalog needs the token contract"
+    assert "$3.00" in listed["description"]
+
+
 def test_an_agent_can_learn_the_terms_without_provoking_a_402(monkeypatch, tmp_path):
     """Discovery has to work before the first request, not as a side effect.
 

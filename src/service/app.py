@@ -186,6 +186,19 @@ BUILD_OUTPUT_SCHEMA: dict[str, object] = {
 }
 
 
+def _canonical_resource_url() -> str:
+    """The service's own public URL for /builds, from configuration.
+
+    Needed because the facilitator is constructed at startup, with no request to
+    read a Host header from — and what it sends at settlement becomes this
+    service's entry in the public catalog. `PUBLIC_HOSTNAME` is the same value
+    the TLS proxy already gets its certificate for, so there is one hostname in
+    the deployment rather than two that can disagree.
+    """
+    host = _env("PUBLIC_HOSTNAME")
+    return f"https://{host}/builds" if host else "/builds"
+
+
 def _public_resource_url(request: Request) -> str:
     """The URL a buyer used, not the one this process sees.
 
@@ -242,6 +255,8 @@ def _verifier_from_env() -> tuple[PaymentVerifier, str, TokenConfig | None]:
                         facilitator_url, token, pay_to, price,
                         api_key=_env("X402_FACILITATOR_KEY") or None,
                         timeout=float(_env("X402_SETTLE_TIMEOUT", "60")),
+                        resource=_canonical_resource_url(),
+                        output_schema=BUILD_OUTPUT_SCHEMA,
                     ) if facilitator_url else None
                 ),
             ),

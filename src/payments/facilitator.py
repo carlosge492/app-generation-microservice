@@ -75,25 +75,33 @@ class PrecheckResult:
 
 
 def payment_requirements(
-    token: TokenConfig, pay_to: str, price_atomic: int, resource: str = "/builds"
+    token: TokenConfig,
+    pay_to: str,
+    price_atomic: int,
+    resource: str = "/builds",
+    output_schema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The requirements object a facilitator checks the payload against.
 
     Sent alongside the payload so the facilitator can confirm the authorization
     matches what we actually asked for, rather than taking our word for it.
+
+    It is also the service's listing. A facilitator catalogs an endpoint the
+    first time it settles a payment for it, reading the description and schemas
+    out of exactly this object — there is no separate registration step. So a
+    `resource` of "/builds" would enter the public index as a path no agent can
+    resolve, and a listing with no `outputSchema` is one an agent cannot tell
+    apart from the thousands of others without a human reading prose.
     """
-    return {
-        "scheme": "exact",
-        "network": token.network,
-        "maxAmountRequired": str(price_atomic),
-        "resource": resource,
-        "description": "One PRD compiled to a Flutter APK",
-        "mimeType": "application/json",
-        "payTo": pay_to,
-        "asset": token.verifying_contract,
-        "maxTimeoutSeconds": 120,
-        "extra": {"name": token.domain_name, "version": token.domain_version},
-    }
+    from src.payments.x402 import challenge
+
+    # Built from the same call that produces the 402, so what is advertised, what
+    # is charged, and what is published cannot describe three different things.
+    terms = dict(challenge(
+        token=token, pay_to=pay_to, max_amount_required=price_atomic,
+        resource=resource, output_schema=output_schema,
+    )["accepts"][0])
+    return terms
 
 
 class HttpFacilitator:
@@ -116,11 +124,18 @@ class HttpFacilitator:
         timeout: float = 60.0,
         retries: int = 2,
         client: httpx.Client | None = None,
+        resource: str = "/builds",
+        output_schema: dict[str, Any] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.pay_to = pay_to
         self.price_atomic = price_atomic
+        # What the public catalog will say about this service. The facilitator
+        # indexes an endpoint on its first successful settlement, so these are
+        # not merely descriptive — they are the listing.
+        self.resource = resource
+        self.output_schema = output_schema
         self.timeout = timeout
         self.retries = retries
         self._headers = {"Content-Type": "application/json"}
@@ -176,7 +191,8 @@ class HttpFacilitator:
             "x402Version": 1,
             "paymentPayload": payment.payload,
             "paymentRequirements": payment_requirements(
-                self.token, self.pay_to, self.price_atomic
+                self.token, self.pay_to, self.price_atomic,
+                self.resource, self.output_schema,
             ),
         }
 

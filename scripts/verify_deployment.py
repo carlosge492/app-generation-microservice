@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import sys
 import time
 from decimal import Decimal
@@ -195,6 +196,79 @@ def check_payment_is_required(base: str) -> None:
         )
 
 
+def check_a_real_signature_verifies(base: str, keys_path: Path = KEYS_PATH) -> str:
+    """Prove the chain config accepts a correctly-signed authorization, free.
+
+    The failure this catches is the one that presents as a broken service: an
+    EIP-712 domain that does not match the token's, so every buyer signature
+    fails to recover and nothing works while `/healthz` looks fine. Running it
+    costs nothing because the service verifies the signature *before* it asks
+    the facilitator to settle, so a key with no balance separates the two:
+
+      rejected at the signature  -> the config is wrong; no buyer can ever pay
+      rejected at settlement     -> the config is right, this wallet is empty
+
+    That makes a mainnet deployment checkable before a single real payment,
+    which is otherwise a chicken-and-egg problem: you cannot learn whether
+    mainnet works without spending on mainnet.
+    """
+    from eth_account import Account
+    from eth_account.messages import encode_typed_data
+
+    from src.payments.eip3009 import Authorization, TokenConfig, typed_data
+
+    if not keys_path.exists():
+        raise Failure(f"the signature check needs any funded-or-not key in {keys_path.name}")
+    payer = Account.from_key(json.loads(keys_path.read_text(encoding="utf-8"))["payer"]["private_key"])
+
+    prd = json.loads(PRD_PATH.read_text(encoding="utf-8"))
+    terms = httpx.post(f"{base}/builds", json=prd, timeout=30).json()["accepts"][0]
+    token = TokenConfig(
+        chain_id=KNOWN_NETWORKS[terms["network"]]["chain_id"],
+        verifying_contract=terms["asset"],
+        domain_name=terms["extra"]["name"],
+        domain_version=terms["extra"]["version"],
+        network=terms["network"],
+    )
+    auth = Authorization(
+        sender=payer.address, recipient=terms["payTo"],
+        value=int(terms["maxAmountRequired"]), valid_after=0,
+        valid_before=int(time.time()) + 600, nonce=secrets.token_bytes(32),
+    )
+    header = json.dumps({
+        "x402Version": 1, "scheme": "exact", "network": token.network,
+        "payload": {
+            "signature": payer.sign_message(
+                encode_typed_data(full_message=typed_data(auth, token))
+            ).signature.to_0x_hex(),
+            "authorization": {
+                "from": auth.sender, "to": auth.recipient, "value": str(auth.value),
+                "validAfter": "0", "validBefore": str(auth.valid_before),
+                "nonce": "0x" + auth.nonce.hex(),
+            },
+        },
+    })
+
+    response = httpx.post(
+        f"{base}/builds", json=prd, headers={PAYMENT_HEADER: header}, timeout=60
+    )
+    if response.status_code == 202:
+        # Only reachable if this key really is funded on this network, which is
+        # the normal testnet case — the payment stands and a build is running.
+        return "accepted and paid for a build"
+
+    reason = str(response.json().get("error") or "")
+    if any(word in reason.lower() for word in
+           ("recover", "signature", "domain", "signer", "malformed")):
+        raise Failure(
+            f"a correctly-signed authorization was rejected at the signature: "
+            f"{reason}. The EIP-712 domain, chain id or token contract does not "
+            f"match the deployed token, so no buyer can pay this service — it "
+            f"fails closed and presents as broken rather than misconfigured."
+        )
+    return f"verified the signature and refused on funds ({reason[:60]})"
+
+
 def buy_a_build(base: str, health: dict, timeout: float, keys_path: Path = KEYS_PATH) -> Path:
     """Pay for real and wait for the APK. Spends testnet USDC."""
     import secrets
@@ -354,6 +428,13 @@ def main() -> int:
 
         check_payment_is_required(base)
         log("refused    an unpaid request, and a PRD that certified its own payment")
+
+        # Costs nothing and is the only check that exercises the chain config
+        # against a real signature, so it runs by default rather than behind
+        # --pay. On mainnet it is the difference between a deployment believed
+        # to work and one shown to.
+        if args.payer_keys.exists():
+            log(f"signature  {check_a_real_signature_verifies(base, args.payer_keys)}")
 
         apk = None
         if args.pay:

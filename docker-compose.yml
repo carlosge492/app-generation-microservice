@@ -23,6 +23,10 @@ services:
     environment:
       REDIS_URL: redis://redis:6379/0
       BUILD_ROOT: /data/builds
+      # The service's own public name. Without it the facilitator settles — and
+      # therefore publishes this service to the discovery catalog — with a
+      # `resource` of "/builds", a bare path no agent can resolve.
+      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME}
       FLUTTER_ROOT: /opt/flutter
       ANDROID_SDK_ROOT: /opt/android
 
