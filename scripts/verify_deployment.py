@@ -196,7 +196,7 @@ def check_payment_is_required(base: str) -> None:
         )
 
 
-def check_a_real_signature_verifies(base: str, keys_path: Path = KEYS_PATH) -> str:
+def check_a_real_signature_verifies(base: str, keys_path: Path | None = None) -> str:
     """Prove the chain config accepts a correctly-signed authorization, free.
 
     The failure this catches is the one that presents as a broken service: an
@@ -211,15 +211,21 @@ def check_a_real_signature_verifies(base: str, keys_path: Path = KEYS_PATH) -> s
     That makes a mainnet deployment checkable before a single real payment,
     which is otherwise a chicken-and-egg problem: you cannot learn whether
     mainnet works without spending on mainnet.
+
+    The signing key is generated here and discarded, never read from a file.
+    That is the whole safety argument: a fresh key has no balance on any chain,
+    so this cannot move money no matter which network it runs against or what
+    the operator's own wallet holds. An earlier version signed with the
+    configured payer, which was free only for as long as that wallet stayed
+    empty — funding it would have turned the ordinary deployment check into a
+    real purchase, with no `--pay` and none of the mainnet guards involved.
     """
     from eth_account import Account
     from eth_account.messages import encode_typed_data
 
     from src.payments.eip3009 import Authorization, TokenConfig, typed_data
 
-    if not keys_path.exists():
-        raise Failure(f"the signature check needs any funded-or-not key in {keys_path.name}")
-    payer = Account.from_key(json.loads(keys_path.read_text(encoding="utf-8"))["payer"]["private_key"])
+    payer = Account.create()
 
     prd = json.loads(PRD_PATH.read_text(encoding="utf-8"))
     terms = httpx.post(f"{base}/builds", json=prd, timeout=30).json()["accepts"][0]
@@ -253,9 +259,14 @@ def check_a_real_signature_verifies(base: str, keys_path: Path = KEYS_PATH) -> s
         f"{base}/builds", json=prd, headers={PAYMENT_HEADER: header}, timeout=60
     )
     if response.status_code == 202:
-        # Only reachable if this key really is funded on this network, which is
-        # the normal testnet case — the payment stands and a build is running.
-        return "accepted and paid for a build"
+        # A freshly generated address cannot hold a balance, so settling one is
+        # not a thing that should be possible. Reaching here means the service
+        # queued a build without the money moving — it is giving builds away.
+        raise Failure(
+            "a payment from a brand-new empty address was accepted and a build "
+            "queued. Settlement is not being enforced, so anyone can sign a "
+            "worthless authorization and take builds for free."
+        )
 
     reason = str(response.json().get("error") or "")
     if any(word in reason.lower() for word in
@@ -429,12 +440,11 @@ def main() -> int:
         check_payment_is_required(base)
         log("refused    an unpaid request, and a PRD that certified its own payment")
 
-        # Costs nothing and is the only check that exercises the chain config
-        # against a real signature, so it runs by default rather than behind
-        # --pay. On mainnet it is the difference between a deployment believed
-        # to work and one shown to.
-        if args.payer_keys.exists():
-            log(f"signature  {check_a_real_signature_verifies(base, args.payer_keys)}")
+        # Costs nothing — it signs with a throwaway key that holds no balance
+        # anywhere — and it is the only check that exercises the chain config
+        # against a real signature. On mainnet it is the difference between a
+        # deployment believed to work and one shown to.
+        log(f"signature  {check_a_real_signature_verifies(base)}")
 
         apk = None
         if args.pay:
