@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
@@ -93,6 +94,35 @@ def test_unpaid_request_is_402_with_a_challenge(client):
     assert body["x402Version"] == 1
     assert body["accepts"][0]["scheme"] == "exact"
     assert PAYMENT_HEADER in body["hint"]
+
+
+@pytest.mark.parametrize("atomic", [3_000_000, 1_250_000, 10_000_000])
+def test_the_advertised_price_is_the_price_that_is_enforced(monkeypatch, tmp_path, atomic):
+    """The quote states the price twice — once for a human, once for the
+    signature — and nothing made them agree.
+
+    `amount` was its own parameter with a "0.50" default that no caller ever
+    passed, so when the enforced price moved to $3.00 the 402 went on
+    advertising fifty cents. A buyer agent that shows `amount` and signs
+    `maxAmountRequired` displays one price and pays six times it.
+
+    Every price here is deliberately *not* 500000. At the default price the
+    stale constant and the real one agree by coincidence, and this test passes
+    with the bug fully present — which is how it first read as green.
+    """
+    monkeypatch.setenv("SUPERVISOR_GENERATOR", "template")
+    monkeypatch.setenv("X402_PRICE_ATOMIC", str(atomic))
+    monkeypatch.setattr("src.service.app.BUILD_ROOT", tmp_path)
+    client = TestClient(
+        create_app(verifier=DevPaymentVerifier(SECRET), store=InMemoryJobStore())
+    )
+
+    accepts = client.post("/builds", json=PRD_BODY).json()["accepts"][0]
+
+    assert int(accepts["maxAmountRequired"]) == atomic
+    assert Decimal(accepts["amount"]) * (10 ** 6) == atomic, (
+        f"advertises {accepts['amount']} USDC but enforces {atomic} atomic units"
+    )
 
 
 def test_wrong_payment_is_rejected(client):

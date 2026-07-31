@@ -8,6 +8,7 @@ only place that decision is made, so it can be audited in one file.
 from __future__ import annotations
 
 import secrets
+from decimal import Decimal
 from typing import Any, Protocol
 
 from src.payments.facilitator import PrecheckResult, SettlementResult
@@ -214,8 +215,26 @@ class DevPaymentVerifier:
         return ok
 
 
+def human_amount(atomic: int, decimals: int) -> str:
+    """The atomic price as a decimal string, for the human-readable field.
+
+    Derived rather than configured. When the displayed price was its own
+    parameter it kept the default it shipped with while the enforced price moved
+    to $3.00 — the 402 advertised fifty cents and the signature it accepted was
+    for six times that.
+    """
+    units = Decimal(atomic) / (Decimal(10) ** decimals)
+    text = f"{units:.{decimals}f}"
+    if "." not in text:
+        return text
+    # Drop trailing zeros so 3000000 reads as "3.00" not "3.000000", but keep at
+    # least two places so a round price still looks like a price. Stripping is
+    # confined to the fractional part: on a 0-decimal token "30" is thirty.
+    whole, _, frac = text.partition(".")
+    return f"{whole}.{frac.rstrip('0').ljust(2, '0')}"
+
+
 def challenge(
-    price: str = "0.50",
     asset: str = "USDC",
     *,
     token: TokenConfig | None = None,
@@ -234,11 +253,13 @@ def challenge(
     """
     accepts: dict[str, Any] = {
         "scheme": "exact",
-        "amount": price,
-        "asset": asset,
         "description": "One PRD compiled to a Flutter APK",
         "resource": resource,
     }
+    if max_amount_required is not None:
+        decimals = token.asset_decimals if token is not None else 6
+        accepts["amount"] = human_amount(max_amount_required, decimals)
+    accepts["asset"] = asset
     if token is not None:
         accepts.update({
             "network": token.network,

@@ -31,6 +31,7 @@ import argparse
 import json
 import sys
 import time
+from decimal import Decimal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -153,12 +154,28 @@ def check_payment_is_required(base: str) -> None:
             f"an unpaid POST /builds returned {response.status_code}, not 402. "
             f"This deployment is giving builds away."
         )
-    hint = json.dumps(response.json())
+    quote = response.json()
+    hint = json.dumps(quote)
     if PAYMENT_HEADER not in hint:
         raise Failure(
             f"the 402 does not name the {PAYMENT_HEADER} header, so an M2M buyer "
             f"cannot discover how to pay from the challenge alone"
         )
+
+    # The quote states the price twice, and a buyer agent may show one figure and
+    # sign the other. Checked on the live service because the two come from
+    # different places in the config and only the deployment has both.
+    terms = quote.get("accepts", [{}])[0]
+    advertised, enforced = terms.get("amount"), terms.get("maxAmountRequired")
+    if advertised is not None and enforced is not None:
+        decimals = 6  # USDC, on every network this deployment ships for
+        if Decimal(advertised) * (10 ** decimals) != Decimal(enforced):
+            raise Failure(
+                f"the 402 advertises {advertised} USDC but enforces {enforced} "
+                f"atomic units ({Decimal(enforced) / 10 ** decimals}). A buyer "
+                f"that displays the first and signs the second pays a different "
+                f"price than the one it was quoted."
+            )
 
     # The gate's whole reason for existing: `x402_payment_verified` is a field on
     # a buyer-supplied document, and a buyer who sets it must still be refused.
