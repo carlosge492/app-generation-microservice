@@ -13,6 +13,7 @@ direction, and each would ship a debug-signed APK labelled as a release build.
 
 from __future__ import annotations
 
+import os
 import zipfile
 from pathlib import Path
 
@@ -28,6 +29,25 @@ from src.build.signing import (
     inspect_signature,
     unsign_release,
 )
+
+
+def _write_apksigner(directory: Path) -> None:
+    """A fake `apksigner` shaped like the host platform expects.
+
+    `find_apksigner` resolves through `sdk_executable`, which on POSIX wants a
+    plain `apksigner` with the executable bit set and never looks at `.bat` —
+    unconditionally writing `apksigner.bat` passed on Windows by accident and
+    was invisible there for the same reason the `flutter.bat` bug was: nothing
+    in this suite ran on Linux until CI's ubuntu-latest leg did, where the
+    fixture failed to match anything under `tmp_path` and fell through to the
+    runner's own preinstalled Android SDK.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    name = "apksigner.bat" if os.name == "nt" else "apksigner"
+    path = directory / name
+    path.write_text("", encoding="utf-8")
+    if os.name != "nt":
+        path.chmod(0o755)
 
 # The Flutter 3.44 scaffold, verbatim — including the TODO that is the bug.
 KOTLIN_TEMPLATE = """plugins {
@@ -190,9 +210,7 @@ def test_apksigner_is_found_under_the_newest_build_tools(tmp_path):
     """Newest wins: an old build-tools left on a machine should not be what
     signs or verifies a release."""
     for version in ("34.0.0", "36.0.0", "35.0.0"):
-        tools = tmp_path / "build-tools" / version
-        tools.mkdir(parents=True)
-        (tools / "apksigner.bat").write_text("", encoding="utf-8")
+        _write_apksigner(tmp_path / "build-tools" / version)
 
     assert "36.0.0" in find_apksigner(tmp_path)
 
