@@ -33,6 +33,43 @@ def client(monkeypatch, tmp_path):
     return TestClient(create_app(verifier=DevPaymentVerifier(SECRET), store=InMemoryJobStore()))
 
 
+def test_a_deployment_that_cannot_build_refuses_before_charging(monkeypatch):
+    """The service must not take money for a build it cannot possibly run.
+
+    `SUPERVISOR_GENERATOR=claude` with no API key fails on the first request to
+    Anthropic — after settlement, because payment settles before the job is
+    queued. It happened on the live deployment: a stray space in .env.deploy
+    read as a key to everything that looked, and a paid build died on "Could not
+    resolve authentication method". The buyer paid and got nothing.
+
+    503, not 402: the buyer has done nothing wrong and paying would not help.
+    """
+    monkeypatch.setenv("SUPERVISOR_GENERATOR", "claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "   ")  # whitespace is not a key
+    monkeypatch.setenv("BUILD_WORKER_EMBEDDED", "0")
+    broken = TestClient(create_app(verifier=DevPaymentVerifier(SECRET),
+                                   store=InMemoryJobStore()))
+
+    paid = broken.post("/builds", json=PRD_BODY, headers={PAYMENT_HEADER: SECRET})
+
+    assert paid.status_code == 503
+    assert broken.get("/healthz").json()["generator_ready"] is False
+
+
+def test_a_usable_deployment_reports_itself_ready(monkeypatch):
+    """The offline generators need no credentials, so they are always ready —
+    otherwise this check would refuse the configuration used to sell the first
+    builds."""
+    monkeypatch.setenv("SUPERVISOR_GENERATOR", "template")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("BUILD_WORKER_EMBEDDED", "0")
+    ok = TestClient(create_app(verifier=DevPaymentVerifier(SECRET),
+                               store=InMemoryJobStore()))
+
+    assert ok.get("/healthz").json()["generator_ready"] is True
+    assert ok.post("/builds", json=PRD_BODY, headers={PAYMENT_HEADER: SECRET}).status_code == 202
+
+
 def _wait(client, job_id, timeout=30.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -153,6 +190,11 @@ def test_unconfigured_deployment_refuses_every_payment(monkeypatch):
     for var in ("X402_SHARED_SECRET", "X402_TOKEN_CONTRACT",
                 "X402_CHAIN_ID", "X402_PAY_TO"):
         monkeypatch.delenv(var, raising=False)
+    # This test is about payment, not generation. Without it the default
+    # generator is `claude`, which needs a key, and the request is refused as
+    # unbuildable before the payment gate is ever consulted — passing for a
+    # reason that has nothing to do with what is being asserted.
+    monkeypatch.setenv("SUPERVISOR_GENERATOR", "template")
 
     with TestClient(create_app()) as bare:
         health = bare.get("/healthz").json()
@@ -183,6 +225,7 @@ def test_challenge_tells_the_buyer_how_to_pay(monkeypatch):
     monkeypatch.setenv("X402_CHAIN_ID", "84532")
     monkeypatch.setenv("X402_PAY_TO", "0x000000000000000000000000000000000000dEaD")
     monkeypatch.setenv("X402_NETWORK", "base-sepolia")
+    monkeypatch.setenv("SUPERVISOR_GENERATOR", "template")  # see the test above
 
     with TestClient(create_app()) as paid:
         body = paid.post("/builds", json=PRD_BODY).json()

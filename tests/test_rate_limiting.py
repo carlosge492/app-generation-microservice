@@ -133,6 +133,10 @@ def client(monkeypatch):
     monkeypatch.setenv("BUILDS_RATE_LIMIT", "2")
     monkeypatch.setenv("BUILDS_RATE_WINDOW_SECONDS", "60")
     monkeypatch.setenv("BUILD_WORKER_EMBEDDED", "0")
+    # Needs no credentials. The default generator is `claude`, and a deployment
+    # that cannot build refuses with 503 before the rate limiter is reached —
+    # which would make every assertion here pass or fail for the wrong reason.
+    monkeypatch.setenv("SUPERVISOR_GENERATOR", "template")
     return TestClient(create_app())
 
 

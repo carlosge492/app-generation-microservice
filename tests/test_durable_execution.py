@@ -410,6 +410,9 @@ def test_an_accepted_build_is_queued_rather_than_run_by_the_web_process(monkeypa
     """The accept path's only job is to settle payment and write the work down.
     With no worker running, the build should be sitting in the queue intact."""
     monkeypatch.setattr("src.service.app.BUILD_ROOT", tmp_path)
+    # The default generator is `claude`, and a deployment that cannot run it
+    # refuses with 503 before anything is queued. This test is about queueing.
+    monkeypatch.setenv("SUPERVISOR_GENERATOR", "template")
     store, queue = InMemoryJobStore(), InMemoryBuildQueue()
     app = create_app(
         verifier=DevPaymentVerifier("s"), store=store, queue=queue, run_worker=False

@@ -99,6 +99,30 @@ def _settings() -> dict[str, Any]:
     }
 
 
+def _generator_unusable() -> str | None:
+    """Why this deployment cannot build anything, or None if it can.
+
+    The `claude` generator needs an API key. Without one every build fails on
+    the first request to Anthropic — *after* the payment has settled, because
+    settlement happens before the job is queued. A deployment in that state
+    reports itself healthy, accepts money and delivers nothing, which is the
+    worst failure this service has and the one it is least able to notice.
+
+    It happened: `ANTHROPIC_API_KEY=` with a single stray space in .env.deploy
+    read as "set" to everything that looked, and a paid build died on
+    "Could not resolve authentication method".
+    """
+    settings = _settings()
+    if settings["generator"] != "claude":
+        return None
+    if not (os.getenv("ANTHROPIC_API_KEY") or "").strip():
+        return (
+            "the claude generator is selected but ANTHROPIC_API_KEY is empty, so "
+            "every build would fail after taking payment"
+        )
+    return None
+
+
 class RefusingVerifier:
     """Used when nothing is configured. Refuses everything.
 
@@ -277,6 +301,10 @@ def create_app(
             # traceback is the least useful moment to do it.
             "queue_depth": _queue_depth(app.state.queue),
             "embedded_worker": app.state.worker is not None,
+            # Whether this deployment can actually build. A service that takes
+            # payment it cannot fulfil should say so somewhere an operator
+            # looks, rather than only in the logs of a build a buyer paid for.
+            "generator_ready": _generator_unusable() is None,
             # Surfaced for the same reason as the rest of this payload: an
             # operator should be able to see that the accepting endpoint is
             # bounded without reading the source or the environment.
@@ -316,6 +344,18 @@ def create_app(
                     "retry_after": retry_after,
                 },
                 headers={"Retry-After": str(retry_after)},
+            )
+
+        # Same principle as validating the PRD below, applied to ourselves: if
+        # this deployment cannot build, taking payment for a build is theft
+        # whoever's fault the misconfiguration is. 503 rather than 402, because
+        # the buyer has done nothing wrong and paying would not help.
+        unusable = _generator_unusable()
+        if unusable is not None:
+            log.error("refusing builds: %s", unusable)
+            return JSONResponse(
+                status_code=503,
+                content={"error": "this deployment cannot build", "detail": unusable},
             )
 
         # Validate before charging: a malformed PRD is the buyer's mistake to

@@ -92,6 +92,12 @@ def check_health(base: str, expect_network: str) -> dict:
             "durable_execution is false: a restart or a killed worker loses "
             "builds that have already been paid for."
         )
+    if health.get("generator_ready") is False:
+        problems.append(
+            f"generator_ready is false: the deployment is set to the "
+            f"{health.get('generator')!r} generator but cannot run it — every "
+            f"build would fail after the payment had already settled."
+        )
     if health.get("builds_rate_limit") in (None, "unlimited"):
         problems.append(
             "builds_rate_limit is unlimited: POST /builds verifies payment over "
