@@ -68,8 +68,9 @@ is where the image, the Gradle cache and every build volume live.
 
 ## 4. Getting the code there
 
-There is no git remote configured. Either push to a private repository and clone
-it on the box, or copy the working tree:
+The repository is private on GitHub, so cloning on the box needs a credential
+there. Copying the working tree avoids that entirely and is what the live
+deployment used:
 
 ```bash
 # from the development machine

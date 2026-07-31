@@ -109,6 +109,33 @@ def find_java21() -> str | None:
     return None
 
 
+def assert_generation_succeeded(final: dict) -> None:
+    """Stop unless the app really did analyse clean.
+
+    `phase == "failed"` is not the only way to fail, and checking only it made
+    both verification scripts claim "generated and analysed clean" for an app
+    with 32 unresolved errors. When the repair budget runs out the router
+    returns "fail", which is wired straight to END — it ends the graph without
+    ever setting `phase`, so the last value written is whatever the QA node put
+    there. The surviving diagnostics are right there in the state; nothing was
+    reading them.
+
+    Shared by both scripts because both had the identical hole.
+    """
+    if final.get("phase") == "failed":
+        raise SystemExit(f"FAILED: generation failed: {final.get('failure')}")
+
+    diagnostics = final.get("diagnostics") or []
+    if diagnostics:
+        rendered = "\n  ".join(d.render() for d in diagnostics[:15])
+        more = f"\n  ... and {len(diagnostics) - 15} more" if len(diagnostics) > 15 else ""
+        raise SystemExit(
+            f"FAILED: generation finished with {len(diagnostics)} unresolved "
+            f"diagnostic(s) — the repair budget ran out and the graph gave up:\n"
+            f"  {rendered}{more}"
+        )
+
+
 def wait_until(predicate, timeout: float, description: str):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -185,8 +212,7 @@ def main() -> int:
             flutter_root=args.flutter_root,
         )
         final = graph.invoke(initial_state(prd.model_dump(mode="json"), str(build_dir)))
-        if final.get("phase") == "failed":
-            raise SystemExit(f"FAILED: generation failed: {final.get('failure')}")
+        assert_generation_succeeded(final)
         log("generated and analysed clean")
 
         # -- find the test the pipeline generated ---------------------------- #

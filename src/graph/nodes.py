@@ -24,6 +24,7 @@ from src.ports.generator import CodeGenerator
 from src.ports.ownership import owner_of, route_for
 from src.ports.runtime import TestRunner
 from src.ports.navigation import build_navigation_test
+from src.ports.pubspec import ensure_test_dependencies
 from src.ports.roundtrip import build_roundtrip_tests
 from src.ports.smoke import build_smoke_tests
 from src.ports.templates import ensure_lint_dependency, repair_pubspec_description
@@ -162,6 +163,16 @@ def make_qa_node(analyzer: DartAnalyzer, runner: TestRunner | None = None) -> No
         files.update(roundtrip)
         navigation = build_navigation_test(_prd(state), files)
         files.update(navigation)
+
+        # Those tests import `package:integration_test/...`, which resolves only
+        # if the pubspec declares it. TemplateGenerator's template happens to;
+        # nothing ever told any other generator to, because the requirement
+        # comes from files written here rather than from the PRD. Without this
+        # the harness's own output fails analysis, and the resulting diagnostics
+        # are charged to the generated app — spending repair attempts on code
+        # that was never wrong.
+        if (roundtrip or navigation) and files.get("pubspec.yaml"):
+            files["pubspec.yaml"] = ensure_test_dependencies(files["pubspec.yaml"])
 
         # Remove anything we wrote on a previous pass that is no longer part of
         # the app. A repair pass that renames a screen used to leave the old

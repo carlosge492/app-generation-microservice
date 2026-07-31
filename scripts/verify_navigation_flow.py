@@ -43,10 +43,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx  # noqa: E402
+from dotenv import load_dotenv  # noqa: E402
+
+# `--generator claude` needs ANTHROPIC_API_KEY, and the other entry points
+# (src/supervisor.py, evals/run.py) already read it from .env. Doing the same
+# here means the key is never passed on a command line, where it would end up in
+# shell history and process listings.
+load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env")
 
 from verify_firestore_roundtrip import (  # noqa: E402
     FIRESTORE_PORT,
     PROJECT_ID,
+    assert_generation_succeeded,
     emulator_up,
     find_java21,
     log,
@@ -302,8 +310,7 @@ def main() -> int:
             flutter_root=args.flutter_root,
         )
         final = graph.invoke(initial_state(prd.model_dump(mode="json"), str(build_dir)))
-        if final.get("phase") == "failed":
-            raise SystemExit(f"FAILED: generation failed: {final.get('failure')}")
+        assert_generation_succeeded(final)
         log("generated and analysed clean")
 
         target = "navigation_test.dart"
