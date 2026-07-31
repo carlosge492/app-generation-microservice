@@ -163,6 +163,24 @@ def test_the_acme_challenge_matches_the_open_ports():
     assert "disable_http_challenge" in caddyfile
 
 
+def test_the_settings_that_decide_cost_and_output_reach_the_container():
+    """A variable the compose file does not pass simply is not there, and the
+    code falls back to its own default without saying so. For SUPERVISOR_MODEL
+    that means a deployment pinning a cheap model keeps billing at the default
+    model's rate, silently — the failure has no symptom to notice."""
+    for name in ("SUPERVISOR_GENERATOR", "SUPERVISOR_MODEL", "SUPERVISOR_BUILD_MODE"):
+        assert name in API_ENV, f"{name} never reaches the container"
+
+
+def test_an_unset_model_is_not_passed_as_an_empty_string():
+    """`${SUPERVISOR_MODEL:-}` puts an empty string in the container, and
+    `os.getenv(name, default)` falls back only on absence — so the generator
+    has to treat empty as unset or it sends "" to the API as a model name."""
+    llm = (ROOT / "src" / "ports" / "llm.py").read_text(encoding="utf-8")
+
+    assert 'os.getenv("SUPERVISOR_MODEL") or model' in llm
+
+
 def test_container_logs_are_bounded():
     """The default json-file driver grows without limit, on a host already
     sized around 1.9 GB of build artifact apiece."""

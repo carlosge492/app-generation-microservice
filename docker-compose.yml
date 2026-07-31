@@ -44,6 +44,11 @@ services:
       # for the deployment to build anything at all.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       SUPERVISOR_GENERATOR: ${SUPERVISOR_GENERATOR:-claude}
+      # Without this line the variable is simply not in the container and the
+      # generator falls back to its own default — so a deployment that set
+      # SUPERVISOR_MODEL to a cheaper model would quietly keep billing at the
+      # default one's rate, with nothing anywhere reporting the discrepancy.
+      SUPERVISOR_MODEL: ${SUPERVISOR_MODEL:-}
       SUPERVISOR_BUILD_MODE: ${SUPERVISOR_BUILD_MODE:-debug}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:

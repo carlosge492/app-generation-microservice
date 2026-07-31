@@ -185,7 +185,13 @@ class AnthropicGenerator:
         effort: str = "high",
         client: Any | None = None,
     ) -> None:
-        self.model = os.getenv("SUPERVISOR_MODEL", model)
+        # `or` rather than a getenv default: an unset variable and one set to
+        # the empty string have to mean the same thing here. Compose writes
+        # `SUPERVISOR_MODEL: ${SUPERVISOR_MODEL:-}`, which puts an empty string
+        # in the container when the deployment does not pin a model — and
+        # `os.getenv(name, default)` falls back only on absence, so the empty
+        # string would have been passed to the API as the model name.
+        self.model = os.getenv("SUPERVISOR_MODEL") or model
         self.effort = effort
         # `client` exists so the request shape can be exercised without
         # credentials; anthropic.Anthropic() raises at construction without them.
