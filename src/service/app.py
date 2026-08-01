@@ -375,6 +375,54 @@ def create_app(
     if app.state.worker is not None:
         app.state.worker.start()
 
+    @app.get("/llms.txt", include_in_schema=False)
+    def llms_txt(request: Request) -> PlainTextResponse:
+        """The service explained to a language model, in the llms.txt convention.
+
+        A crawler reading `/` gets marketing prose and a crawler reading
+        `/openapi.json` gets 4 KB of schema; neither answers "what is this, what
+        does it cost, and how do I call it" in the order an agent needs. Several
+        listed x402 services publish one, and directories index it.
+        """
+        base = _public_resource_url(request).replace("/llms.txt", "")
+        price = human_amount(app.state.price_atomic, 6) if app.state.token else "?"
+        network = app.state.token.network if app.state.token else "unconfigured"
+        return PlainTextResponse(f"""\
+# PRD to Flutter APK
+
+> Compiles a JSON product requirements document into an installable Android
+> APK. Plans a design, generates the Flutter widget tree, wires Riverpod state
+> into it, runs static analysis with an automatic repair loop, then packages the
+> build. Typically 5-8 minutes.
+
+Base URL: {base}
+Price: {price} USDC per build, on {network}, via x402 (EIP-3009).
+Payment settles on-chain before the build starts. No API key, no account.
+
+## Free
+
+- POST /validate — is this document well-formed, and what would it build?
+  Same validator the paid path uses, so anything passing here is accepted there.
+- GET /.well-known/x402 — payment terms, machine-readable
+- GET /schema/prd.json — JSON Schema for the request body
+- GET /builds — answers 402 with the price; costs nothing to ask
+
+## Paid
+
+- POST /builds — body is a PRD (see /schema/prd.json), header X-Payment carries
+  a signed EIP-3009 authorization. Returns 202 with a job id.
+- GET /builds/{{id}} — status, log, diagnostics, settlement_tx, usage
+- GET /builds/{{id}}/apk — the artifact, once apk_available is true
+
+## Notes for agents
+
+A build that fails still returns its diagnostics; payment settles before the
+build, so a failure is visible in the job record rather than silent. Poll the
+job rather than holding the connection open. The 402 challenge carries the
+token contract in `asset` and the EIP-712 domain in `extra`, which is everything
+needed to sign without reading this page.
+""")
+
     @app.get("/robots.txt", include_in_schema=False)
     def robots() -> PlainTextResponse:
         """Crawlable on purpose. Being found is the point, and the only thing
@@ -525,6 +573,60 @@ def create_app(
                 f"{app.state.rate_limiter.window_seconds}s"
                 if app.state.rate_limiter.enabled else "unlimited"
             ),
+        }
+
+    @app.post("/validate")
+    def validate(prd_body: dict[str, Any]) -> dict[str, Any]:
+        """Free: would this document build, and what would come out?
+
+        Every other route costs $3, which means nobody can evaluate the service
+        without first trusting it. This answers the question a buyer actually has
+        before paying — is my document well-formed, and is it describing the app
+        I think it is — using the same validator the paid path uses, so a
+        document that passes here cannot be rejected there.
+
+        Costs nothing to serve: pure schema validation, no model call.
+        """
+        try:
+            prd = PRD.model_validate(prd_body)
+        except Exception as exc:
+            return {
+                "valid": False,
+                # The 422 a buyer would otherwise discover one field at a time,
+                # after paying.
+                "errors": str(exc).splitlines(),
+                "schema": "/schema/prd.json",
+            }
+
+        navigations = [
+            action.target
+            for screen in prd.screens for action in screen.actions
+            if action.kind == "navigate" and action.target
+        ]
+        return {
+            "valid": True,
+            "app_name": prd.app_name,
+            "package_name": prd.package_name,
+            "theme": prd.theme,
+            "would_build": {
+                "screens": [
+                    {"id": s.id, "title": s.title, "kind": s.kind,
+                     "fields": len(s.fields), "actions": len(s.actions)}
+                    for s in prd.screens
+                ],
+                "models": [
+                    {"name": m.name, "collection": m.collection, "fields": len(m.fields)}
+                    for m in prd.models
+                ],
+                "firebase_auth": prd.auth,
+                "navigation_targets": sorted(set(navigations)),
+            },
+            "price": {
+                "amount": human_amount(app.state.price_atomic, 6),
+                "currency": "USDC",
+                "network": app.state.token.network if app.state.token else None,
+                "buy": "POST the same document to /builds",
+            },
         }
 
     @app.get("/builds")

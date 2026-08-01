@@ -97,6 +97,40 @@ def test_unpaid_request_is_402_with_a_challenge(client):
     assert PAYMENT_HEADER in body["hint"]
 
 
+def test_a_document_that_validates_free_is_not_rejected_after_paying(monkeypatch, tmp_path):
+    """The free preview has to agree with the paid path or it is a trap.
+
+    Its whole purpose is letting a buyer check a document before spending $3.
+    If /validate accepted something /builds then rejected with a 422, the free
+    endpoint would be actively worse than nothing — so both run the same
+    validator, and this pins that rather than trusting it.
+    """
+    client = _configured_client(monkeypatch, tmp_path)
+
+    good = client.post("/validate", json=PRD_BODY).json()
+    assert good["valid"] is True
+    assert good["app_name"] == PRD_BODY["app_name"]
+    assert good["would_build"]["screens"], "a buyer learns nothing without this"
+    assert good["price"]["amount"] == "3.00"
+    # The paid route accepts what the free one blessed: unpaid, so it reaches
+    # the payment gate (402) rather than the schema rejection (422).
+    assert client.post("/builds", json=PRD_BODY).status_code == 402
+
+    bad = client.post("/validate", json={"app_name": "x"}).json()
+    assert bad["valid"] is False and bad["errors"]
+    assert client.post("/builds", json={"app_name": "x"}).status_code == 422
+
+
+def test_llms_txt_tells_an_agent_the_price_and_the_free_routes(monkeypatch, tmp_path):
+    """Indexed by directories and read by crawlers, so a stale price here is a
+    lie told at scale. Generated from the live config for that reason."""
+    body = _configured_client(monkeypatch, tmp_path).get("/llms.txt").text
+
+    assert "3.00 USDC" in body
+    assert "/validate" in body and "/schema/prd.json" in body
+    assert "{price}" not in body and "{base}" not in body
+
+
 def test_an_unpaid_get_on_the_paid_route_quotes_the_price(monkeypatch, tmp_path):
     """Crawlers, x402 clients and directory probers all GET first.
 
