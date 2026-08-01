@@ -76,6 +76,9 @@ def main() -> int:
                         help="how far back to look; Base is ~43200 blocks a day")
     parser.add_argument("--follow", action="store_true",
                         help="keep polling for new sales until interrupted")
+    parser.add_argument("--price", type=int, default=3_000_000,
+                        help="atomic price of one build; transfers of any other "
+                             "amount are reported as deposits, not sales")
     args = parser.parse_args()
 
     url = RPC[args.network]
@@ -85,10 +88,21 @@ def main() -> int:
 
     print(f"watching {args.pay_to} for USDC on {args.network}")
     found = sales(url, contract, args.pay_to, start, head)
-    total = sum(sale["usdc"] for sale in found)
-    for sale in found:
-        print(f"  +{sale['usdc']:.2f} USDC  from {sale['payer']}  block {sale['block']}  {sale['tx']}")
-    print(f"\n{len(found)} sale(s), {total:.2f} USDC in the last {args.blocks} blocks")
+
+    # Any incoming transfer looks identical on-chain, so the price is what
+    # separates a purchase from the operator topping the wallet up. Without this
+    # a funding deposit is reported as revenue, which is the one number this
+    # script exists to get right.
+    price = args.price / 1e6
+    paid = [s for s in found if abs(s["usdc"] - price) < 1e-9]
+    other = [s for s in found if s not in paid]
+
+    for sale in paid:
+        print(f"  SALE  +{sale['usdc']:.2f} USDC  from {sale['payer']}  {sale['tx']}")
+    for deposit in other:
+        print(f"  (deposit, not a sale: +{deposit['usdc']:.2f} USDC from {deposit['payer']})")
+    print(f"\n{len(paid)} sale(s) at {price:.2f} USDC = {sum(s['usdc'] for s in paid):.2f} USDC "
+          f"in the last {args.blocks} blocks")
 
     if not args.follow:
         return 0
@@ -104,7 +118,8 @@ def main() -> int:
                     continue
                 seen.add(sale["tx"])
                 stamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                print(f"[{stamp}] SALE  +{sale['usdc']:.2f} USDC from {sale['payer']}  {sale['tx']}")
+                kind = "SALE " if abs(sale["usdc"] - price) < 1e-9 else "deposit"
+                print(f"[{stamp}] {kind} +{sale['usdc']:.2f} USDC from {sale['payer']}  {sale['tx']}")
             head = latest
         except SystemExit as exc:
             # A flaky public RPC should pause the watch, not end it.
