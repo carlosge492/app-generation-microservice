@@ -230,7 +230,13 @@ that fails still tells you why — see <code>diagnostics</code> on the job.</p>
 generated, Riverpod state is wired into it, the result is statically analysed and
 repaired until clean, then packaged. Typically 5&ndash;8 minutes.</p>
 
+<p><strong>Using an agent?</strong> Add <code>{base}/mcp</code> as an HTTP MCP
+server in Claude or Cursor — nothing to install. It can check your document and
+quote the price for free, before anything is paid for.</p>
+
 <table>
+  <tr><td>MCP server</td><td><code>{base}/mcp</code></td></tr>
+  <tr><td>Free check</td><td><code>POST {base}/validate</code></td></tr>
   <tr><td>Payment terms</td><td><a href="{base}/.well-known/x402">/.well-known/x402</a></td></tr>
   <tr><td>Document schema</td><td><a href="{base}/schema/prd.json">/schema/prd.json</a></td></tr>
   <tr><td>API reference</td><td><a href="{base}/docs">/docs</a></td></tr>
@@ -402,6 +408,12 @@ Base URL: {base}
 Price: {price} USDC per build, on {network}, via x402 (EIP-3009).
 Payment settles on-chain before the build starts. No API key, no account.
 
+## MCP
+
+- POST /mcp — remote MCP server (JSON-RPC over HTTP, no install). Tools:
+  validate_prd, prd_schema, payment_terms (all free) and build_status.
+  Add {base}/mcp as an HTTP MCP server in Claude or Cursor.
+
 ## Free
 
 - POST /validate — is this document well-formed, and what would it build?
@@ -457,6 +469,8 @@ needed to sign without reading this page.
                 "schema": f"{base}/schema/prd.json",
                 "openapi": f"{base}/openapi.json",
                 "payment": "x402 (EIP-3009); POST /builds returns 402 with terms",
+                "mcp": f"{base}/mcp",
+                "free": [f"{base}/validate", f"{base}/llms.txt", f"{base}/schema/prd.json"],
             }
 
         return HTMLResponse(_LANDING_PAGE.format(price=price, network=network, base=base))

@@ -237,6 +237,10 @@ def test_the_front_door_answers_humans_and_machines(monkeypatch, tmp_path):
     machine = client.get("/", headers={"accept": "application/json"}).json()
     assert machine["price_usdc"] == "3.00"
     assert machine["manifest"].endswith("/.well-known/x402")
+    # An MCP endpoint nobody is told about gets no traffic.
+    assert machine["mcp"].endswith("/mcp")
+    assert "/mcp" in client.get("/llms.txt").text
+    assert "/mcp" in page.text
 
     assert "Disallow: /builds/" in client.get("/robots.txt").text
 
