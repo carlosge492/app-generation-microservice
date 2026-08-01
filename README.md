@@ -7,6 +7,31 @@ the real Flutter toolchain, and an x402 payment gate in front of packaging.
 The design goal is not "generates plausible code" but **zero-error compilation**:
 if the output fails CI, the loop has failed.
 
+## It is running
+
+<https://37-27-249-33.sslip.io> — $3.00 USDC per build on Base mainnet, paid with
+[x402](https://x402.gitbook.io/x402/). No account, no API key: payment is a signed
+EIP-3009 authorization in a header, settled on-chain before the build starts.
+
+Nothing below costs anything, so you can see what it would do before paying:
+
+```bash
+# Does my document build, and what would come out?
+curl -X POST https://37-27-249-33.sslip.io/validate \
+     -H 'Content-Type: application/json' -d @examples/todo_app.prd.json
+
+# What does it cost, and how do I sign for it?
+curl https://37-27-249-33.sslip.io/.well-known/x402
+```
+
+**Using an agent?** Add `https://37-27-249-33.sslip.io/mcp` as an HTTP MCP server
+in Claude or Cursor — nothing to install. It exposes `validate_prd`, `prd_schema`,
+`payment_terms` and `build_status`.
+
+`/validate` runs the same validator the paid path runs, so a document it accepts
+will not be rejected after payment. A build that fails still returns its
+diagnostics, because payment settles first and a silent failure would be theft.
+
 ## Quick start
 
 No credentials and no Flutter SDK needed — the defaults are fully offline:
