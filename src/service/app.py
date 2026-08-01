@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -65,6 +65,7 @@ from src.service.queue import (
     InMemoryBuildQueue,
     RedisBuildQueue,
 )
+from src.service.mcp import Tool, handle_payload
 from src.service.ratelimit import RateLimiter, client_identity
 from src.service.artifacts import (
     DEFAULT_RETENTION_SECONDS,
@@ -170,6 +171,8 @@ def _env(name: str, default: str = "") -> str:
     """
     return os.getenv(name) or default
 
+
+SERVICE_VERSION = "0.1.0"
 
 # What a buyer receives, advertised in the challenge so an agent can tell whether
 # this service is worth paying before it pays. `outputSchema` is an optional v1
@@ -327,7 +330,7 @@ def create_app(
     app = FastAPI(
         title="App-Generation Microservice",
         summary="POST a Product Requirements Document, receive a compiled Flutter APK.",
-        version="0.1.0",
+        version=SERVICE_VERSION,
     )
     chosen, mode, token = _verifier_from_env()
     app.state.verifier = verifier if verifier is not None else chosen
@@ -574,6 +577,72 @@ needed to sign without reading this page.
                 if app.state.rate_limiter.enabled else "unlimited"
             ),
         }
+
+    @app.post("/mcp")
+    async def mcp_endpoint(request: Request):
+        """Remote MCP: paste this URL into Claude or Cursor and the tools appear.
+
+        Every tool below calls the same function the matching HTTP route calls,
+        so the MCP surface cannot describe a service the API does not provide.
+        """
+        payload = await request.json()
+        tools = {
+            tool.name: tool for tool in (
+                Tool(
+                    "validate_prd",
+                    "Check a product requirements document and report exactly what "
+                    "would be built — screens, models, navigation, auth — without "
+                    "building it. Free, no payment required. Uses the same validator "
+                    "as the paid build, so anything accepted here will not be "
+                    "rejected after payment.",
+                    {
+                        "type": "object",
+                        "properties": {"prd": {
+                            "type": "object",
+                            "description": "the PRD; see the prd_schema tool",
+                        }},
+                        "required": ["prd"],
+                    },
+                    lambda prd: validate(prd),
+                ),
+                Tool(
+                    "prd_schema",
+                    "The JSON Schema a product requirements document must satisfy. "
+                    "Generate against this rather than guessing field names.",
+                    {"type": "object", "properties": {}},
+                    lambda: PRD.model_json_schema(),
+                ),
+                Tool(
+                    "payment_terms",
+                    "What a build costs and how to pay: price, token contract, "
+                    "chain and the EIP-712 domain, as an x402 challenge. Free.",
+                    {"type": "object", "properties": {}},
+                    lambda: challenge(
+                        token=app.state.token, pay_to=app.state.pay_to,
+                        max_amount_required=app.state.price_atomic,
+                        resource=_canonical_resource_url(),
+                        output_schema=BUILD_OUTPUT_SCHEMA,
+                    ),
+                ),
+                Tool(
+                    "build_status",
+                    "Status, log, diagnostics, settlement transaction and token "
+                    "usage for a build already paid for.",
+                    {
+                        "type": "object",
+                        "properties": {"job_id": {"type": "string"}},
+                        "required": ["job_id"],
+                    },
+                    lambda job_id: get_build(job_id, request),
+                ),
+            )
+        }
+
+        answer = handle_payload(payload, tools, "prd-to-flutter-apk", SERVICE_VERSION)
+        if answer is None:
+            # A notification: acknowledged, deliberately with no body.
+            return Response(status_code=202)
+        return JSONResponse(answer)
 
     @app.post("/validate")
     def validate(prd_body: dict[str, Any]) -> dict[str, Any]:

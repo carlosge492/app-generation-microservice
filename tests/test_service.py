@@ -97,6 +97,79 @@ def test_unpaid_request_is_402_with_a_challenge(client):
     assert PAYMENT_HEADER in body["hint"]
 
 
+def _rpc(client, method, params=None, request_id=1):
+    body = {"jsonrpc": "2.0", "method": method}
+    if request_id is not None:
+        body["id"] = request_id
+    if params is not None:
+        body["params"] = params
+    return client.post("/mcp", json=body)
+
+
+def test_an_agent_can_discover_and_call_the_tools_over_mcp(monkeypatch, tmp_path):
+    """The whole point of the endpoint: a URL pasted into Claude or Cursor.
+
+    Checked end to end rather than per-function, because what breaks a remote
+    MCP server is never the tool body — it is the handshake around it.
+    """
+    client = _configured_client(monkeypatch, tmp_path)
+
+    started = _rpc(client, "initialize", {"protocolVersion": "2025-06-18"}).json()
+    assert started["result"]["protocolVersion"] == "2025-06-18"
+    assert started["result"]["capabilities"]["tools"] is not None
+    assert started["result"]["serverInfo"]["name"]
+
+    listed = _rpc(client, "tools/list").json()["result"]["tools"]
+    names = {tool["name"] for tool in listed}
+    assert {"validate_prd", "prd_schema", "payment_terms", "build_status"} <= names
+    for tool in listed:
+        assert tool["description"] and tool["inputSchema"]["type"] == "object"
+
+    called = _rpc(client, "tools/call", {
+        "name": "validate_prd", "arguments": {"prd": PRD_BODY},
+    }).json()["result"]
+    assert called["isError"] is False
+    assert json.loads(called["content"][0]["text"])["valid"] is True
+
+
+def test_mcp_never_answers_a_notification(monkeypatch, tmp_path):
+    """A message with no `id` is a notification and must get no response body.
+
+    Clients send `notifications/initialized` immediately after the handshake.
+    Replying to it is a protocol violation, and the strict ones treat that as a
+    hard failure — which presents as a server that never finishes initialising
+    rather than as a bad reply.
+    """
+    client = _configured_client(monkeypatch, tmp_path)
+
+    response = _rpc(client, "notifications/initialized", request_id=None)
+
+    assert response.status_code == 202
+    assert not response.content
+
+
+def test_mcp_reports_a_failing_tool_without_breaking_the_session(monkeypatch, tmp_path):
+    """A tool that raises is a tool error, not a protocol error.
+
+    An agent should see what went wrong and be able to try something else; a
+    JSON-RPC error at the transport level makes the whole connection look
+    broken instead.
+    """
+    client = _configured_client(monkeypatch, tmp_path)
+
+    missing = _rpc(client, "tools/call", {
+        "name": "build_status", "arguments": {"job_id": "does-not-exist"},
+    }).json()
+    assert "error" not in missing, "a bad job id must not fail the session"
+    assert missing["result"]["isError"] is True
+
+    unknown = _rpc(client, "tools/call", {"name": "no_such_tool", "arguments": {}}).json()
+    assert unknown["error"]["code"] == -32602
+
+    assert _rpc(client, "resources/list").json()["error"]["code"] == -32601, \
+        "unimplemented methods must be refused, not silently accepted"
+
+
 def test_a_document_that_validates_free_is_not_rejected_after_paying(monkeypatch, tmp_path):
     """The free preview has to agree with the paid path or it is a trap.
 
