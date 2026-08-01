@@ -214,14 +214,22 @@ _LANDING_PAGE = """<!doctype html>
   td:first-child {{ opacity: .7; white-space: nowrap; }}
 </style>
 <h1>PRD to Flutter APK</h1>
-<p class="sub">Send a JSON product requirements document. Get back a compiled
-Android APK. <strong>{price} USDC</strong> per build, on {network}.</p>
+<p class="sub">Turn a JSON spec into a working Android app. Add it as a tool in
+Claude or Cursor — no subscription, <strong>{price} USDC</strong> per build.</p>
 
-<p>Payment uses <a href="https://x402.gitbook.io/x402/">x402</a>: POST without
-payment and the 402 response carries everything needed to sign an EIP-3009
-authorization. The payment settles on-chain before the build starts, and a build
-that fails still tells you why — see <code>diagnostics</code> on the job.</p>
+<p><strong>Nothing to install.</strong> Add this as an HTTP MCP server:</p>
+<pre>{base}/mcp</pre>
+<p>Four tools: <code>validate_prd</code>, <code>prd_schema</code> and
+<code>payment_terms</code> are free — your agent can check a document and see
+exactly what it would build before anything costs money. <code>start_build</code>
+buys one: call it once to get quoted, sign, call again to build.</p>
 
+<p>No account, no API key, nothing recurring — pay only for the app you actually
+generate, settled on-chain via <a href="https://x402.gitbook.io/x402/">x402</a>
+before the build starts. A build that fails still tells you why — see
+<code>diagnostics</code> on the job.</p>
+
+<p>Prefer curl? Same service, plain HTTP:</p>
 <pre>curl -X POST {base}/builds \\
      -H 'Content-Type: application/json' \\
      -d @my-app.prd.json          # 402 with payment terms
@@ -230,10 +238,6 @@ that fails still tells you why — see <code>diagnostics</code> on the job.</p>
 <p>What happens: the document is planned into a design, a Flutter widget tree is
 generated, Riverpod state is wired into it, the result is statically analysed and
 repaired until clean, then packaged. Typically 5&ndash;8 minutes.</p>
-
-<p><strong>Using an agent?</strong> Add <code>{base}/mcp</code> as an HTTP MCP
-server in Claude or Cursor — nothing to install. It can check your document and
-quote the price for free, before anything is paid for.</p>
 
 <table>
   <tr><td>MCP server</td><td><code>{base}/mcp</code></td></tr>
@@ -400,20 +404,24 @@ def create_app(
         return PlainTextResponse(f"""\
 # PRD to Flutter APK
 
-> Compiles a JSON product requirements document into an installable Android
-> APK. Plans a design, generates the Flutter widget tree, wires Riverpod state
-> into it, runs static analysis with an automatic repair loop, then packages the
-> build. Typically 5-8 minutes.
+> Turns a JSON product requirements document into an installable Android APK.
+> Plans a design, generates the Flutter widget tree, wires Riverpod state into
+> it, runs static analysis with an automatic repair loop, then packages the
+> build. Typically 5-8 minutes. Callable as an MCP tool from Claude or Cursor,
+> or directly over HTTP.
 
 Base URL: {base}
-Price: {price} USDC per build, on {network}, via x402 (EIP-3009).
-Payment settles on-chain before the build starts. No API key, no account.
+Price: {price} USDC per build, on {network}, via x402 (EIP-3009). No
+subscription, no account, no API key — pay per build, settled on-chain before
+the build starts.
 
-## MCP
+## MCP — nothing to install
 
-- POST /mcp — remote MCP server (JSON-RPC over HTTP, no install). Tools:
-  validate_prd, prd_schema, payment_terms (all free) and build_status.
-  Add {base}/mcp as an HTTP MCP server in Claude or Cursor.
+Add {base}/mcp as an HTTP MCP server in Claude or Cursor. Tools:
+
+- validate_prd, prd_schema, payment_terms — free
+- start_build — quotes on the first call, builds on the second once signed
+- build_status — poll a build already paid for
 
 ## Free
 

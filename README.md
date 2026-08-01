@@ -7,26 +7,33 @@ the real Flutter toolchain, and an x402 payment gate in front of packaging.
 The design goal is not "generates plausible code" but **zero-error compilation**:
 if the output fails CI, the loop has failed.
 
-## It is running
+## Use it from Claude or Cursor — nothing to install
 
-<https://37-27-249-33.sslip.io> — $3.00 USDC per build on Base mainnet, paid with
-[x402](https://x402.gitbook.io/x402/). No account, no API key: payment is a signed
-EIP-3009 authorization in a header, settled on-chain before the build starts.
+Add this as an HTTP MCP server:
 
-Nothing below costs anything, so you can see what it would do before paying:
+```
+https://37-27-249-33.sslip.io/mcp
+```
+
+Four tools: `validate_prd` and `prd_schema` and `payment_terms` are **free** —
+your agent can check whether a document is well-formed and see exactly what it
+would build before anything costs money. `start_build` buys a build: call it
+once to get quoted, sign, call again to build. No account, no API key, no
+subscription — **$3.00 USDC per build**, paid on the spot via
+[x402](https://x402.gitbook.io/x402/) and settled on-chain before the build
+starts. That's the whole pricing model: nothing recurring, pay only for the app
+you actually generate.
+
+Prefer curl? Same service, plain HTTP:
 
 ```bash
-# Does my document build, and what would come out?
+# Does my document build, and what would come out? Free.
 curl -X POST https://37-27-249-33.sslip.io/validate \
      -H 'Content-Type: application/json' -d @examples/todo_app.prd.json
 
 # What does it cost, and how do I sign for it?
 curl https://37-27-249-33.sslip.io/.well-known/x402
 ```
-
-**Using an agent?** Add `https://37-27-249-33.sslip.io/mcp` as an HTTP MCP server
-in Claude or Cursor — nothing to install. It exposes `validate_prd`, `prd_schema`,
-`payment_terms` and `build_status`.
 
 `/validate` runs the same validator the paid path runs, so a document it accepts
 will not be rejected after payment. A build that fails still returns its
