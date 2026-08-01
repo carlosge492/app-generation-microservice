@@ -20,6 +20,7 @@ replaced with whatever the server's verifier concluded from the request. See
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -592,6 +593,54 @@ needed to sign without reading this page.
             ),
         }
 
+    def _start_build_for_agent(
+        prd_body: dict[str, Any], x_payment: str | None, request: Request
+    ) -> dict[str, Any]:
+        """Buy a build over MCP, by the same route an HTTP buyer takes.
+
+        Delegates to `create_build` rather than reimplementing it: the rate
+        limit, the generator-readiness gate, PRD validation and — above all —
+        the payment check are one implementation. A second copy here is how an
+        MCP path ends up giving builds away that the HTTP path charges for.
+
+        Payment stays the caller's job. An agent holds the wallet and this
+        service never sees a key; an unpaid call is answered with the terms to
+        sign rather than an error, so a paying agent needs exactly two calls
+        and no documentation.
+        """
+        try:
+            answer = create_build(prd_body, request, x_payment)
+        except HTTPException as exc:
+            # A malformed PRD. Raising through the MCP layer would surface as a
+            # bare tool error; the agent can act on the field list.
+            return {
+                "paid": False,
+                "error": "the PRD was rejected before any payment was taken",
+                "detail": exc.detail,
+                "next": "fix the document and retry; prd_schema has the contract",
+            }
+        body = json.loads(bytes(answer.body).decode("utf-8"))
+
+        if answer.status_code == 402:
+            return {
+                "paid": False,
+                "next": (
+                    "sign an EIP-3009 authorization over accepts[0] and call "
+                    "start_build again with it as x_payment"
+                ),
+                **body,
+            }
+        if answer.status_code >= 400:
+            return {"paid": False, "error": body}
+
+        job_id = body.get("id")
+        return {
+            "paid": True,
+            **body,
+            "poll": f"build_status(job_id='{job_id}')",
+            "apk_url": f"{_public_resource_url(request).rsplit('/', 1)[0]}/builds/{job_id}/apk",
+        }
+
     @app.post("/mcp")
     async def mcp_endpoint(request: Request):
         """Remote MCP: paste this URL into Claude or Cursor and the tools appear.
@@ -648,6 +697,35 @@ needed to sign without reading this page.
                         "required": ["job_id"],
                     },
                     lambda job_id: get_build(job_id, request),
+                ),
+                Tool(
+                    "start_build",
+                    "Buy a build. Call once without `x_payment` to get the x402 "
+                    "payment requirements, sign an EIP-3009 authorization over "
+                    "them, then call again passing the signed authorization as "
+                    "`x_payment`. Returns a job id; poll it with build_status "
+                    "until apk_available is true, then download the APK from "
+                    "apk_url. A build takes about 5-8 minutes, so poll rather "
+                    "than blocking. Payment settles on-chain before the build "
+                    "starts, and a failed build still returns its diagnostics.",
+                    {
+                        "type": "object",
+                        "properties": {
+                            "prd": {
+                                "type": "object",
+                                "description": "the PRD; see the prd_schema tool",
+                            },
+                            "x_payment": {
+                                "type": "string",
+                                "description": (
+                                    "signed x402 payment authorization (the value "
+                                    "of the X-Payment header). Omit to be quoted."
+                                ),
+                            },
+                        },
+                        "required": ["prd"],
+                    },
+                    lambda prd, x_payment=None: _start_build_for_agent(prd, x_payment, request),
                 ),
             )
         }

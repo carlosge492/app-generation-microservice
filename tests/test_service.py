@@ -132,6 +132,55 @@ def test_an_agent_can_discover_and_call_the_tools_over_mcp(monkeypatch, tmp_path
     assert json.loads(called["content"][0]["text"])["valid"] is True
 
 
+def test_an_agent_can_complete_a_purchase_over_mcp(monkeypatch, tmp_path):
+    """Discovery without a way to buy is a dead end.
+
+    An agent that finds this service through MCP could previously check the
+    price and nothing else — buying meant abandoning MCP and hand-rolling x402
+    over raw HTTP. `start_build` closes that: unpaid returns the terms to sign,
+    paid returns a job id and where to poll.
+    """
+    client = _configured_client(monkeypatch, tmp_path)
+
+    quoted = json.loads(_rpc(client, "tools/call", {
+        "name": "start_build", "arguments": {"prd": PRD_BODY},
+    }).json()["result"]["content"][0]["text"])
+
+    assert quoted["paid"] is False
+    # Everything needed to sign, without reading documentation.
+    terms = quoted["accepts"][0]
+    assert terms["asset"] and terms["payTo"] and terms["maxAmountRequired"]
+    assert "x_payment" in quoted["next"]
+
+
+def test_mcp_cannot_be_used_to_take_a_build_without_paying(monkeypatch, tmp_path):
+    """The MCP path must charge exactly what the HTTP path charges.
+
+    It delegates to the same endpoint for this reason: a second implementation
+    of the payment gate is how one route ends up giving away what the other
+    sells. Checked by asserting the two disagree about nothing.
+    """
+    client = _configured_client(monkeypatch, tmp_path)
+
+    over_mcp = json.loads(_rpc(client, "tools/call", {
+        "name": "start_build",
+        "arguments": {"prd": PRD_BODY, "x_payment": "not-a-real-authorization"},
+    }).json()["result"]["content"][0]["text"])
+    over_http = client.post(
+        "/builds", json=PRD_BODY, headers={PAYMENT_HEADER: "not-a-real-authorization"}
+    )
+
+    assert over_http.status_code == 402
+    assert over_mcp["paid"] is False, "MCP accepted a payment HTTP refused"
+    assert "id" not in over_mcp, "a job was queued without payment"
+    # A PRD claiming its own payment is refused on this path too.
+    forged = json.loads(_rpc(client, "tools/call", {
+        "name": "start_build",
+        "arguments": {"prd": dict(PRD_BODY, x402_payment_verified=True)},
+    }).json()["result"]["content"][0]["text"])
+    assert forged["paid"] is False
+
+
 def test_mcp_never_answers_a_notification(monkeypatch, tmp_path):
     """A message with no `id` is a notification and must get no response body.
 
