@@ -85,6 +85,59 @@ def repair_pubspec_description(pubspec: str) -> str:
     return repaired
 
 
+# The pubspec top-level keys pub.dev recognises, plus a handful of common
+# plugin-added ones. Not exhaustive by intent: this only decides which flush-left
+# lines are *left alone*, and leaving an unrecognised-but-legitimate key alone
+# is the safe direction — the repair below only ever activates on a file that is
+# already failing to parse, and only keeps a change that makes it parse.
+_KNOWN_TOP_LEVEL_KEYS = {
+    "name", "description", "publish_to", "version", "homepage", "repository",
+    "issue_tracker", "documentation", "environment", "dependencies",
+    "dev_dependencies", "dependency_overrides", "flutter", "flutter_intl",
+    "msix_config", "flutter_native_splash", "flutter_launcher_icons",
+}
+
+
+def repair_stray_prose_line(pubspec: str) -> str:
+    """Comment out a flush-left sentence the model forgot to prefix with `#`.
+
+    A model sometimes explains itself directly in the manifest — e.g. writes
+    "Firestore collection: `observations`" as a bare line rather than a
+    comment. At column 1 with a colon in it, YAML reads that as a new top-level
+    mapping key appearing mid-document, and aborts with "expected <document
+    start>, but found <block mapping start>" — a message that names the
+    symptom, not the cause. It cost a real buyer a paid, failed build: this
+    manifest is frozen once planning ends, so nothing downstream could have
+    repaired it, and no repair pass was even attempted — that class of
+    diagnostic fails fast by design. Prefixing the line with `#` is the same
+    fix a human would make, and it cannot touch a file that already parses.
+    """
+    try:
+        yaml.safe_load(pubspec)
+        return pubspec
+    except yaml.YAMLError:
+        pass
+
+    lines = pubspec.splitlines()
+    changed = False
+    for i, line in enumerate(lines):
+        if not line or line[0] in " \t#-":
+            continue  # indented, blank, a comment, or a list item: not this shape
+        key = line.split(":", 1)[0].strip()
+        if ":" in line and key not in _KNOWN_TOP_LEVEL_KEYS:
+            lines[i] = "# " + line
+            changed = True
+    if not changed:
+        return pubspec
+
+    repaired = "\n".join(lines) + "\n"
+    try:
+        yaml.safe_load(repaired)
+    except yaml.YAMLError:
+        return pubspec
+    return repaired
+
+
 def ensure_lint_dependency(pubspec: str, version: str = "^4.0.0") -> str:
     """Guarantee pubspec declares the lint package our analysis_options needs.
 

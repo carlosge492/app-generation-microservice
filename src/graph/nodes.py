@@ -27,7 +27,11 @@ from src.ports.navigation import build_navigation_test
 from src.ports.pubspec import ensure_test_dependencies
 from src.ports.roundtrip import build_roundtrip_tests
 from src.ports.smoke import build_smoke_tests
-from src.ports.templates import ensure_lint_dependency, repair_pubspec_description
+from src.ports.templates import (
+    ensure_lint_dependency,
+    repair_pubspec_description,
+    repair_stray_prose_line,
+)
 from src.prd.schema import PRD
 
 Node = Callable[[BuildState], dict[str, Any]]
@@ -44,7 +48,14 @@ def make_planning_node(generator: CodeGenerator) -> Node:
         return {
             "design_md": plan.design_md,
             # Infrastructure we own, like analysis_options.yaml itself.
-            "pubspec": ensure_lint_dependency(repair_pubspec_description(plan.pubspec)),
+            # Both repairs are no-ops on a manifest that already parses, and
+            # each keeps its change only if it produces valid YAML. They run
+            # here because the manifest is frozen once GenUI starts: an
+            # unparseable pubspec is routed `fatal`, so a buyer who hits one has
+            # already paid for a build that will never get a repair pass.
+            "pubspec": ensure_lint_dependency(
+                repair_stray_prose_line(repair_pubspec_description(plan.pubspec))
+            ),
             "analysis_options": plan.analysis_options,
             "phase": "genui",
             "log": [f"planning: DESIGN.md ({len(plan.design_md)} chars) + pubspec.yaml drafted"],

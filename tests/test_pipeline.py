@@ -22,6 +22,7 @@ from src.ports.templates import (
     TemplateGenerator,
     dart_string,
     repair_pubspec_description,
+    repair_stray_prose_line,
 )
 from src.prd.schema import PRD, load_prd
 
@@ -728,6 +729,58 @@ def test_model_written_pubspec_description_is_repaired():
     parsed = yaml.safe_load(repair_pubspec_description(broken))
     assert parsed["description"] == "Auth-first app: sign in, browse."
     assert parsed["name"] == "gated"
+
+
+def test_stray_prose_in_a_model_written_pubspec_is_commented_out():
+    """The failure that cost a real mainnet purchase.
+
+    Sonnet wrote an explanatory line flush-left with no `#`. At column 1 with a
+    colon in it, YAML reads it as a new top-level key mid-document and aborts —
+    "expected <document start>, but found <block mapping start>", the exact
+    message the live build reported at line 9. `unparseable_pubspec` routes
+    `fatal` because the manifest is frozen after planning, so the buyer paid and
+    got zero repair attempts.
+    """
+    broken = (
+        "name: field_notes\n"
+        "description: A notes app.\n"
+        "version: 1.0.0+1\n"
+        "\n"
+        "environment:\n"
+        "  sdk: '>=3.0.0 <4.0.0'\n"
+        "\n"
+        "dependencies:\n"
+        "Firestore collection: `observations`\n"
+        "  flutter:\n"
+        "    sdk: flutter\n"
+    )
+    with pytest.raises(yaml.YAMLError):
+        yaml.safe_load(broken)
+
+    parsed = yaml.safe_load(repair_stray_prose_line(broken))
+    assert parsed["name"] == "field_notes"
+    assert "flutter" in parsed["dependencies"]
+    # The prose survives as a comment rather than being deleted: a human reading
+    # the generated manifest should still see what the model meant.
+    assert "# Firestore collection" in repair_stray_prose_line(broken)
+
+
+def test_stray_prose_repair_never_touches_a_valid_pubspec():
+    """It must be inert on healthy input — it runs on every build, and silently
+    commenting out a legitimate top-level key would break working manifests."""
+    healthy = (
+        "name: ok\n"
+        "description: Fine.\n"
+        "version: 1.0.0\n"
+        "environment:\n"
+        "  sdk: '>=3.0.0 <4.0.0'\n"
+        "dependencies:\n"
+        "  flutter:\n"
+        "    sdk: flutter\n"
+        "flutter:\n"
+        "  uses-material-design: true\n"
+    )
+    assert repair_stray_prose_line(healthy) == healthy
 
 
 def test_pubspec_repair_gives_up_on_other_breakage():
