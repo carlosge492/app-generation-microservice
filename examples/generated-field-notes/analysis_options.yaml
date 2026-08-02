@@ -1,0 +1,11 @@
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  errors:
+    # The generated tree is machine-written; treat sloppiness as fatal so the
+    # QA subagent sees it rather than a human reviewer.
+    unused_import: error
+    unused_local_variable: error
+    unused_element: error
+    unused_field: error
+    dead_code: error

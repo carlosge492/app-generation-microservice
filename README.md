@@ -39,6 +39,15 @@ curl https://37-27-249-33.sslip.io/.well-known/x402
 will not be rejected after payment. A build that fails still returns its
 diagnostics, because payment settles first and a silent failure would be theft.
 
+## See what it produces, before paying
+
+[`examples/generated-field-notes/`](examples/generated-field-notes/) is
+**unmodified output** — 23 files generated from the 45-line
+[`todo_app.prd.json`](examples/todo_app.prd.json) beside it, checked in so you
+can read exactly what a build gives you. Nothing was hand-fixed for
+presentation. Start with
+[`GENERATED.md`](examples/generated-field-notes/GENERATED.md).
+
 ## Quick start
 
 No credentials and no Flutter SDK needed — the defaults are fully offline:
