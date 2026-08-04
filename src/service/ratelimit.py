@@ -71,6 +71,10 @@ class RateLimiter:
     limit: int
     window_seconds: int = 60
     redis: object | None = None
+    # Namespaces the Redis key. Two limiters guarding different things — paid
+    # builds and free previews — must not share a bucket, or the cheap one
+    # exhausts the expensive one's allowance.
+    name: str = "builds"
     _local: dict[str, _Window] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -96,7 +100,7 @@ class RateLimiter:
 
     def _check_redis(self, identity: str, now: float) -> int | None:
         bucket = int(now // self.window_seconds)
-        key = f"ratelimit:builds:{identity}:{bucket}"
+        key = f"ratelimit:{self.name}:{identity}:{bucket}"
         pipe = self.redis.pipeline()
         pipe.incr(key)
         # Set on every request rather than only the first: an INCR that raced

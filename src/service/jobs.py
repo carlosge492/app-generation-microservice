@@ -60,6 +60,12 @@ class BuildJob:
     # building, so "it was in the queue" is never by itself the authorization —
     # the same reason the buyer's own `x402_payment_verified` is discarded.
     paid: bool = False
+    # A free preview: the pipeline generates and analyses the app but is never
+    # allowed to package it. `paid` stays False for these, which is why the
+    # worker's refusal has to distinguish the two rather than checking `paid`
+    # alone. Packaging is refused twice over — here, and by the graph node
+    # itself, which reads `x402_payment_verified` off the PRD.
+    preview: bool = False
     # How many times a worker has picked this up. Bounded in `worker.py`: a
     # build that kills its worker would otherwise be retried for ever.
     attempts: int = 0
@@ -81,6 +87,9 @@ class BuildJob:
             # that it did, rather than wondering why the log went backwards.
             "attempts": self.attempts,
             "apk_available": bool(self.apk_path and Path(self.apk_path).exists()),
+            # Says plainly which kind of job this is, so a caller polling one
+            # never waits for an APK that was never going to be built.
+            "preview": self.preview,
             # What this build cost to produce. Shown to the buyer as well as
             # the operator: an M2M buyer deciding whether the price is fair has
             # the same interest in it that the seller does.

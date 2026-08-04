@@ -132,6 +132,70 @@ def test_an_agent_can_discover_and_call_the_tools_over_mcp(monkeypatch, tmp_path
     assert json.loads(called["content"][0]["text"])["valid"] is True
 
 
+def test_a_free_preview_never_produces_an_apk(monkeypatch, tmp_path):
+    """The one property that makes free generation safe to offer at all.
+
+    A preview runs the whole pipeline unpaid, so if the packaging gate were
+    ever bypassed it would hand out for free the exact artifact the service
+    sells. Checked at the level that decides it — the PRD the pipeline is
+    handed — rather than by trusting the graph to refuse.
+    """
+    from src.prd.schema import PRD
+    from src.service.app import _preview_prd, _verified_prd
+
+    prd = PRD.model_validate(PRD_BODY)
+
+    assert _preview_prd(prd)["x402_payment_verified"] is False
+    assert _verified_prd(prd)["x402_payment_verified"] is True
+
+    # A buyer who sets the flag themselves gets it discarded, on both paths.
+    forged = PRD.model_validate(dict(PRD_BODY, x402_payment_verified=True))
+    assert _preview_prd(forged)["x402_payment_verified"] is False
+
+
+def test_a_preview_job_is_built_but_a_merely_unpaid_one_is_not(tmp_path):
+    """`paid` alone no longer decides whether the worker will run a job, so the
+    refusal has to distinguish a preview from an unpaid build. Getting this
+    wrong in the other direction would build anything anyone queued."""
+    from src.service.app import build_work
+    from src.service.jobs import BuildJob
+
+    unpaid = BuildJob(id="a", app_name="x", prd=PRD_BODY, paid=False, preview=False)
+    with pytest.raises(PermissionError):
+        build_work(unpaid)
+
+    both = BuildJob(id="b", app_name="x", prd=PRD_BODY, paid=True, preview=True)
+    with pytest.raises(ValueError, match="both paid and a free preview"):
+        build_work(both)
+
+    # A preview gets past the refusal and returns work to run.
+    preview = BuildJob(id="c", app_name="x", prd=PRD_BODY, paid=False, preview=True)
+    assert callable(build_work(preview))
+
+
+def test_previews_are_capped_globally_not_just_per_caller(monkeypatch, tmp_path):
+    """Each preview spends real model tokens, so the per-address limit is not
+    the protection — a caller rotating addresses would walk straight through it.
+    The global budget is what actually bounds the bill."""
+    monkeypatch.setenv("PREVIEW_PER_IP_DAILY", "1")
+    monkeypatch.setenv("PREVIEW_DAILY_LIMIT", "2")
+    client = _configured_client(monkeypatch, tmp_path)
+
+    accepted = 0
+    for i in range(6):
+        # A different address every time, which defeats the per-IP limit alone.
+        response = client.post(
+            "/preview", json=PRD_BODY, headers={"x-forwarded-for": f"10.0.0.{i}"}
+        )
+        if response.status_code == 202:
+            accepted += 1
+        else:
+            assert response.status_code == 429
+            assert "/builds still works" in json.dumps(response.json())
+
+    assert accepted == 2, f"the global budget did not hold: {accepted} previews ran"
+
+
 def test_an_agent_can_complete_a_purchase_over_mcp(monkeypatch, tmp_path):
     """Discovery without a way to buy is a dead end.
 
@@ -290,6 +354,10 @@ def test_the_front_door_answers_humans_and_machines(monkeypatch, tmp_path):
     assert machine["mcp"].endswith("/mcp")
     assert "/mcp" in client.get("/llms.txt").text
     assert "/mcp" in page.text
+    # The free preview is the reason to try this at all; a visitor who never
+    # learns it exists is back to paying $3 on faith.
+    assert "/preview" in client.get("/llms.txt").text
+    assert "/preview" in page.text
 
     assert "Disallow: /builds/" in client.get("/robots.txt").text
 

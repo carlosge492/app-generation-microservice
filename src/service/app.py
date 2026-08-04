@@ -219,10 +219,13 @@ Claude or Cursor — no subscription, <strong>{price} USDC</strong> per build.</
 
 <p><strong>Nothing to install.</strong> Add this as an HTTP MCP server:</p>
 <pre>{base}/mcp</pre>
-<p>Four tools: <code>validate_prd</code>, <code>prd_schema</code> and
-<code>payment_terms</code> are free — your agent can check a document and see
-exactly what it would build before anything costs money. <code>start_build</code>
-buys one: call it once to get quoted, sign, call again to build.</p>
+<p><strong>Try your own spec first, free.</strong> <code>preview_build</code>
+generates a real app from your document and hands back the source — same
+generator, same repair loop, same static analysis as a paid build. It just is
+not packaged into an APK. That is what the {price} buys.</p>
+<p><code>validate_prd</code>, <code>prd_schema</code> and
+<code>payment_terms</code> are free too. <code>start_build</code> buys the
+build: call it once to get quoted, sign, call again.</p>
 
 <p>No account, no API key, nothing recurring — pay only for the app you actually
 generate, settled on-chain via <a href="https://x402.gitbook.io/x402/">x402</a>
@@ -241,6 +244,7 @@ repaired until clean, then packaged. Typically 5&ndash;8 minutes.</p>
 
 <table>
   <tr><td>MCP server</td><td><code>{base}/mcp</code></td></tr>
+  <tr><td>Free preview</td><td><code>POST {base}/preview</code></td></tr>
   <tr><td>Free check</td><td><code>POST {base}/validate</code></td></tr>
   <tr><td>Payment terms</td><td><a href="{base}/.well-known/x402">/.well-known/x402</a></td></tr>
   <tr><td>Document schema</td><td><a href="{base}/schema/prd.json">/schema/prd.json</a></td></tr>
@@ -357,6 +361,22 @@ def create_app(
         window_seconds=int(os.getenv("BUILDS_RATE_WINDOW_SECONDS", "60")),
     )
 
+    # A free preview spends real model tokens — roughly a quarter of the sale
+    # price per run — so these two limits are the whole cost control, not a
+    # politeness measure. The global one is what bounds the bill: without it a
+    # single caller rotating addresses could run the API budget to nothing in an
+    # afternoon. Set PREVIEW_DAILY_LIMIT=0 to switch previews off entirely.
+    app.state.preview_limiter = RateLimiter(
+        limit=int(os.getenv("PREVIEW_PER_IP_DAILY", "1")),
+        window_seconds=86_400,
+        name="preview-ip",
+    )
+    app.state.preview_budget = RateLimiter(
+        limit=int(os.getenv("PREVIEW_DAILY_LIMIT", "5")),
+        window_seconds=86_400,
+        name="preview-global",
+    )
+
     client = _redis() if (store is None or queue is None) else None
     if store is not None:
         app.state.store = store
@@ -372,6 +392,10 @@ def create_app(
 
     if client is not None:
         app.state.rate_limiter.redis = client
+        # Shared deliberately: a per-process preview budget is not a budget at
+        # all once there is more than one worker.
+        app.state.preview_limiter.redis = client
+        app.state.preview_budget.redis = client
 
     # An API process builds as well as accepts by default, so a single-container
     # deployment keeps working with no extra moving parts. Set
@@ -419,12 +443,19 @@ the build starts.
 
 Add {base}/mcp as an HTTP MCP server in Claude or Cursor. Tools:
 
+- preview_build — generate a real app from your own spec, free, and read the
+  source. Same generator and repair loop as a paid build; it is simply not
+  packaged into an APK.
+- build_files — the generated source for a preview or a build
 - validate_prd, prd_schema, payment_terms — free
 - start_build — quotes on the first call, builds on the second once signed
 - build_status — poll a build already paid for
 
 ## Free
 
+- POST /preview — generate the app from your own spec and read the code, free.
+  Rate limited: each run spends real model tokens. Returns a job id; the source
+  is at GET /builds/{{id}}/files once it finishes.
 - POST /validate — is this document well-formed, and what would it build?
   Same validator the paid path uses, so anything passing here is accepted there.
 - GET /.well-known/x402 — payment terms, machine-readable
@@ -601,6 +632,10 @@ needed to sign without reading this page.
             ),
         }
 
+    def _json_of(response: JSONResponse) -> dict[str, Any]:
+        """The body of a route's JSONResponse, for tools that reuse the route."""
+        return json.loads(bytes(response.body).decode("utf-8"))
+
     def _start_build_for_agent(
         prd_body: dict[str, Any], x_payment: str | None, request: Request
     ) -> dict[str, Any]:
@@ -707,6 +742,36 @@ needed to sign without reading this page.
                     lambda job_id: get_build(job_id, request),
                 ),
                 Tool(
+                    "preview_build",
+                    "Generate a real app from a PRD for FREE and read the source "
+                    "it produces — same generator, same repair loop, same static "
+                    "analysis as a paid build. It is not packaged into an APK; "
+                    "that is what payment buys. Returns a job id: poll it with "
+                    "build_status, then read the code with build_files. Takes "
+                    "about 5 minutes. Heavily rate limited, because each run "
+                    "costs the operator real model tokens.",
+                    {
+                        "type": "object",
+                        "properties": {"prd": {
+                            "type": "object",
+                            "description": "the PRD; see the prd_schema tool",
+                        }},
+                        "required": ["prd"],
+                    },
+                    lambda prd: _json_of(create_preview(prd, request)),
+                ),
+                Tool(
+                    "build_files",
+                    "The generated source for a build or preview, as a map of "
+                    "path to file contents.",
+                    {
+                        "type": "object",
+                        "properties": {"job_id": {"type": "string"}},
+                        "required": ["job_id"],
+                    },
+                    lambda job_id: build_files(job_id, request),
+                ),
+                Tool(
                     "start_build",
                     "Buy a build. Call once without `x_payment` to get the x402 "
                     "payment requirements, sign an EIP-3009 authorization over "
@@ -743,6 +808,116 @@ needed to sign without reading this page.
             # A notification: acknowledged, deliberately with no body.
             return Response(status_code=202)
         return JSONResponse(answer)
+
+    @app.post("/preview", status_code=202)
+    def create_preview(prd_body: dict[str, Any], request: Request) -> JSONResponse:
+        """Generate a real app from the caller's own spec, free, but never package it.
+
+        The gap this closes: every competitor in this category lets you generate
+        your own idea and only charges to take the artifact away. Here the only
+        thing anyone could see without paying was one committed example, so a
+        buyer had to spend $3 on faith that their spec would fare as well.
+
+        This runs the identical pipeline — same generator, same repair loop,
+        same static analysis — and stops before packaging. Payment still buys
+        exactly what it bought before: the compiled APK.
+
+        It costs real tokens, which is why it is capped globally rather than
+        only per caller.
+        """
+        unusable = _generator_unusable()
+        if unusable is not None:
+            return JSONResponse(
+                status_code=503,
+                content={"error": "this deployment cannot build", "detail": unusable},
+            )
+
+        identity = client_identity(
+            request.headers.get("x-forwarded-for"),
+            request.client.host if request.client else None,
+        )
+        for limiter, scope, explain in (
+            (request.app.state.preview_limiter, identity,
+             "one free preview per address per day"),
+            (request.app.state.preview_budget, "all",
+             "the daily free-preview budget for this deployment is spent"),
+        ):
+            retry_after = limiter.check(scope)
+            if retry_after is not None:
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "error": "free previews are rate limited",
+                        "detail": explain,
+                        "retry_after": retry_after,
+                        # Refusing a free preview must never read as "the
+                        # service is down"; the paid path is unaffected.
+                        "paid_builds_unaffected": "POST /builds still works",
+                    },
+                    headers={"Retry-After": str(retry_after)},
+                )
+
+        try:
+            prd = PRD.model_validate(prd_body)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        store: JobStore = request.app.state.store
+        job = store.create(prd.app_name, prd=prd.model_dump(mode="json"))
+        job.build_dir = str(BUILD_ROOT / job.id)
+        job.preview = True
+        job.paid = False
+        store.save(job)
+        request.app.state.queue.push(job.id)
+
+        return JSONResponse(
+            status_code=202,
+            content={
+                **job.public(),
+                "note": (
+                    "free preview: the app is generated and analysed but not "
+                    "packaged. Poll this id, then read the source from "
+                    f"{_public_resource_url(request).rsplit('/', 1)[0]}"
+                    f"/builds/{job.id}/files"
+                ),
+                "to_get_an_apk": "POST the same document to /builds with payment",
+            },
+        )
+
+    @app.get("/builds/{job_id}/files")
+    def build_files(job_id: str, request: Request) -> dict[str, Any]:
+        """The generated source. The deliverable of a preview, and readable for
+        a paid build too — someone who bought the APK has more right to the code
+        inside it than a stranger running a preview does."""
+        store: JobStore = request.app.state.store
+        job = store.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="no such build")
+        if not job.build_dir or not Path(job.build_dir).is_dir():
+            raise HTTPException(status_code=404, detail="this build has no source on disk")
+
+        root = Path(job.build_dir)
+        files: dict[str, str] = {}
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.suffix not in {".dart", ".yaml", ".md"}:
+                continue
+            relative = path.relative_to(root).as_posix()
+            # Everything Flutter generates under these lives in the build tree,
+            # not the source the generator wrote.
+            if relative.startswith((".dart_tool/", "build/", "android/", "ios/")):
+                continue
+            try:
+                files[relative] = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+
+        return {
+            "id": job.id,
+            "status": job.status.value,
+            "preview": job.preview,
+            "file_count": len(files),
+            "files": files,
+        }
 
     @app.post("/validate")
     def validate(prd_body: dict[str, Any]) -> dict[str, Any]:
@@ -961,6 +1136,19 @@ def _verified_prd(prd: PRD) -> dict[str, Any]:
     return payload
 
 
+def _preview_prd(prd: PRD) -> dict[str, Any]:
+    """The PRD a free preview runs, with payment explicitly not asserted.
+
+    The counterpart to `_verified_prd`, and deliberately its mirror image: the
+    buyer's own flag is discarded here too, set to False rather than trusted.
+    A preview that arrived claiming `x402_payment_verified: true` would
+    otherwise package an APK for nothing.
+    """
+    payload = prd.model_dump(mode="json")
+    payload["x402_payment_verified"] = False
+    return payload
+
+
 def build_work(job: BuildJob):
     """What building this job actually means, for a worker that only has the record.
 
@@ -971,10 +1159,15 @@ def build_work(job: BuildJob):
     should fail with a reason the buyer can act on, and the worker turns a raised
     exception into exactly that.
     """
-    if not job.paid:
+    if not job.paid and not job.preview:
         raise PermissionError(
             "refusing to build a job that no payment path marked as paid"
         )
+    if job.paid and job.preview:
+        # Nothing constructs this, and if something ever did it would be a job
+        # whose intent is ambiguous at exactly the point where the answer
+        # decides whether an APK gets built for free.
+        raise ValueError("a job cannot be both paid and a free preview")
     if not job.prd:
         raise ValueError("job has no PRD stored; nothing to build")
 
@@ -1002,9 +1195,12 @@ def build_work(job: BuildJob):
         build_dir = Path(job.build_dir)
         build_dir.mkdir(parents=True, exist_ok=True)
 
-        final = app_graph.invoke(
-            initial_state(_verified_prd(prd), str(build_dir))
-        )
+        # A preview runs the identical pipeline with payment *not* asserted, so
+        # the packaging node refuses on its own terms. The gate is therefore not
+        # bypassed for previews — it is exercised, and observed to close.
+        payload = _preview_prd(prd) if job.preview else _verified_prd(prd)
+
+        final = app_graph.invoke(initial_state(payload, str(build_dir)))
 
         # Appended, not assigned: a requeued build already carries the note
         # saying its first attempt was abandoned, and overwriting that would
@@ -1021,6 +1217,14 @@ def build_work(job: BuildJob):
         else:
             job.status = BuildStatus.SUCCEEDED
             job.apk_path = final.get("apk_path") or None
+
+        if job.preview and job.apk_path:
+            # Unreachable unless the packaging gate has been broken. Refusing
+            # here as well means a regression in the gate shows up as a failed
+            # preview rather than as free APKs.
+            job.apk_path = None
+            job.status = BuildStatus.FAILED
+            job.failure = "a preview produced an APK; packaging gate did not hold"
 
         # Recorded whatever the outcome — a failed build still spent tokens,
         # and those are the builds whose cost most needs explaining. Offline
@@ -1046,7 +1250,11 @@ def build_work(job: BuildJob):
         # means the disk is reclaimed while the worker still holds the lease,
         # so no other worker can be reading the directory as it goes.
         if _PRUNE_BUILDS:
-            job.apk_path = keep_only_the_artifact(job.build_dir, job.apk_path)
+            # A preview's whole deliverable is the source, so pruning to "just
+            # the APK" would delete the only thing it produced. Expired
+            # directories are still swept, which is what actually bounds disk.
+            if not job.preview:
+                job.apk_path = keep_only_the_artifact(job.build_dir, job.apk_path)
             sweep_expired(BUILD_ROOT, _RETENTION_SECONDS)
 
     return run

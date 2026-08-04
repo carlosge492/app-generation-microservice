@@ -15,19 +15,29 @@ Add this as an HTTP MCP server:
 https://37-27-249-33.sslip.io/mcp
 ```
 
-Four tools: `validate_prd` and `prd_schema` and `payment_terms` are **free** —
-your agent can check whether a document is well-formed and see exactly what it
-would build before anything costs money. `start_build` buys a build: call it
-once to get quoted, sign, call again to build. No account, no API key, no
-subscription — **$3.00 USDC per build**, paid on the spot via
+**Try your own spec before paying anything.** `preview_build` runs the real
+pipeline on your document — same generator, same repair loop, same
+`flutter analyze` gate — and hands back the generated source. It just doesn't
+package it into an APK. That's what the money buys.
+
+`validate_prd`, `prd_schema` and `payment_terms` are free too. `start_build`
+buys the build: call it once to get quoted, sign, call again. No account, no API
+key, no subscription — **$3.00 USDC per build**, paid on the spot via
 [x402](https://x402.gitbook.io/x402/) and settled on-chain before the build
-starts. That's the whole pricing model: nothing recurring, pay only for the app
-you actually generate.
+starts. Nothing recurring; pay only for the app you actually take away.
+
+Previews are rate limited, because each one spends real model tokens on the
+operator's account.
 
 Prefer curl? Same service, plain HTTP:
 
 ```bash
-# Does my document build, and what would come out? Free.
+# Generate the app from your own spec, free. Returns a job id; the source
+# lands at /builds/{id}/files when it finishes.
+curl -X POST https://37-27-249-33.sslip.io/preview \
+     -H 'Content-Type: application/json' -d @examples/todo_app.prd.json
+
+# Does my document build, and what would come out? Free, instant.
 curl -X POST https://37-27-249-33.sslip.io/validate \
      -H 'Content-Type: application/json' -d @examples/todo_app.prd.json
 
