@@ -183,3 +183,10 @@ async def main() -> None:
                 f"{len(files)} files, analyser clean"
                 + (", APK in the key-value store" if apk_url else "")
             )
+
+
+if __name__ == "__main__":
+    # Without this the module defines `main` and exits, `python -m` returns 0,
+    # and Apify reports the run SUCCEEDED having built nothing at all — an empty
+    # dataset behind a green tick, which is the worst way for this to fail.
+    asyncio.run(main())

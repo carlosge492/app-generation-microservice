@@ -393,6 +393,34 @@ def test_the_actor_does_not_trust_the_callers_own_payment_flag():
         "the flag must come from a variable the charge set, not from the input"
 
 
+def test_running_the_actor_module_actually_runs_it():
+    """`python -m src.actor.main` must do something.
+
+    The first version defined `async def main()` and never called it. The module
+    imported, the function was defined, the process exited 0 — and Apify
+    reported the run SUCCEEDED with an empty dataset. A green tick over nothing
+    built is worse than a crash, because nothing draws attention to it.
+
+    Checked against the Dockerfile's actual CMD rather than an assumed one, so
+    renaming the entry point without updating the image fails here.
+    """
+    tree = ast.parse(ACTOR_MAIN)
+    guarded_calls = [
+        node for node in tree.body
+        if isinstance(node, ast.If)
+        and ast.unparse(node.test) == "__name__ == '__main__'"
+        for stmt in ast.walk(node)
+        if isinstance(stmt, ast.Call) and "run" in ast.unparse(stmt.func)
+    ]
+    assert guarded_calls, "the module defines main() but never runs it"
+
+    cmd = next(
+        line for line in ACTOR_DOCKERFILE.splitlines()
+        if line.strip().startswith("CMD")
+    )
+    assert "src.actor.main" in cmd, f"the image does not run this module: {cmd}"
+
+
 def test_the_actor_reuses_the_pipeline_rather_than_reimplementing_it():
     """The point of the Actor is a second front door, not a second product. If
     it ever stops importing the shared graph, the two surfaces can claim the
