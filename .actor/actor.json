@@ -1,0 +1,35 @@
+{
+  "actorSpecification": 1,
+  "name": "prd-to-flutter-apk",
+  "title": "PRD to Flutter APK",
+  "description": "Turn a JSON product spec into a compiling Flutter app: widget tree, Riverpod state, static analysis with an automatic repair loop, then a packaged Android APK.",
+  "version": "0.1",
+  "meta": {
+    "templateId": "python-empty"
+  },
+  "dockerfile": "../Dockerfile.actor",
+  "input": "./input_schema.json",
+  "storages": {
+    "dataset": {
+      "actorSpecification": 1,
+      "title": "Generated files",
+      "description": "One record per generated source file, plus a final record summarising the run.",
+      "views": {
+        "overview": {
+          "title": "Generated files",
+          "transformation": {
+            "fields": ["path", "bytes", "kind"]
+          },
+          "display": {
+            "component": "table",
+            "properties": {
+              "path": { "label": "File", "format": "text" },
+              "bytes": { "label": "Size", "format": "number" },
+              "kind": { "label": "Kind", "format": "text" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

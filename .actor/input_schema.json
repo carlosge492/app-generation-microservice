@@ -1,0 +1,82 @@
+{
+  "title": "PRD to Flutter APK",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "prd": {
+      "title": "Product requirements document",
+      "type": "object",
+      "description": "The app to build, as JSON. Requires app_name, package_name (reverse-DNS) and screens; models, theme and auth are optional. The full JSON Schema is served at /schema/prd.json by the hosted service.",
+      "editor": "json",
+      "prefill": {
+        "app_name": "Field Notes",
+        "package_name": "com.example.fieldnotes",
+        "description": "A small field-research capture app.",
+        "theme": "material",
+        "auth": true,
+        "models": [
+          {
+            "name": "Observation",
+            "collection": "observations",
+            "fields": [
+              { "name": "title", "label": "Title", "type": "text" },
+              { "name": "count", "label": "Specimen count", "type": "number" },
+              { "name": "verified", "label": "Verified", "type": "bool" }
+            ]
+          }
+        ],
+        "screens": [
+          {
+            "id": "observations",
+            "title": "Observations",
+            "kind": "list",
+            "model": "Observation",
+            "actions": [{ "name": "openCapture", "kind": "navigate", "target": "capture" }]
+          },
+          {
+            "id": "capture",
+            "title": "New observation",
+            "kind": "form",
+            "model": "Observation",
+            "actions": [{ "name": "saveObservation", "kind": "create", "target": "Observation" }]
+          }
+        ]
+      }
+    },
+    "anthropicApiKey": {
+      "title": "Anthropic API key",
+      "type": "string",
+      "description": "Your own key, used only for this run and never stored. Leave empty to use the template generator, which needs no key and produces a deterministic app rather than a designed one.",
+      "editor": "textfield",
+      "isSecret": true
+    },
+    "model": {
+      "title": "Model",
+      "type": "string",
+      "description": "Ignored unless an Anthropic key is supplied.",
+      "editor": "select",
+      "default": "claude-sonnet-5",
+      "enum": ["claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5"],
+      "enumTitles": [
+        "Sonnet 5 — the default this service runs on",
+        "Opus 5 — stronger, several times the cost",
+        "Haiku 4.5 — cheapest, has produced type errors here"
+      ]
+    },
+    "packageApk": {
+      "title": "Package an APK",
+      "type": "boolean",
+      "description": "Off: generate and analyse the source only, which is free and takes about half the time. On: also run Gradle and produce an installable APK, which is the paid step.",
+      "default": false
+    },
+    "maxRepairs": {
+      "title": "Repair passes",
+      "type": "integer",
+      "description": "How many times the loop may feed diagnostics back to the agent that owns them before giving up.",
+      "default": 3,
+      "minimum": 0,
+      "maximum": 5
+    }
+  },
+  "required": ["prd"]
+}

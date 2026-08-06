@@ -10,6 +10,7 @@ verification table was proven on, or a `${VAR}` in compose that nothing supplies
 
 from __future__ import annotations
 
+import ast
 import io
 import re
 import subprocess
@@ -293,6 +294,68 @@ def test_the_receiving_address_has_no_default():
     wrong address sends every buyer's payment somewhere the operator does not
     control, and it would be indistinguishable from working."""
     assert re.search(r"^X402_PAY_TO=\s*$", ENV_EXAMPLE, re.M)
+
+
+ACTOR_MAIN = (ROOT / "src" / "actor" / "main.py").read_text(encoding="utf-8")
+
+
+def test_the_actor_earns_the_packaging_flag_rather_than_asserting_it():
+    """CLAUDE.md §4 on a different payment rail.
+
+    Apify replaces the x402 settlement, so the Actor is the one place where
+    `x402_payment_verified` could plausibly be set to a literal True and nobody
+    would notice until APKs were going out unpaid. It has to come from a charge
+    that succeeded, and the charge has to happen before the graph runs — after
+    would be a build already given away.
+    """
+    tree = ast.parse(ACTOR_MAIN)
+
+    literal_true = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Subscript)
+            and isinstance(target.slice, ast.Constant)
+            and target.slice.value == "x402_payment_verified"
+            for target in node.targets
+        )
+        and isinstance(node.value, ast.Constant)
+    ]
+    assert not literal_true, "the packaging flag is hardcoded rather than earned"
+
+    assert 'payload["x402_payment_verified"] = paid' in ACTOR_MAIN
+    # The charge decides `paid`, and does so before the pipeline is invoked.
+    assert ACTOR_MAIN.index("Actor.charge") < ACTOR_MAIN.index("graph.invoke")
+
+
+def test_the_actor_does_not_trust_the_callers_own_payment_flag():
+    """The PRD is caller-supplied on this path too. A run arriving with the flag
+    already true must not package anything — same discard the hosted service
+    does in `_verified_prd`/`_preview_prd`."""
+    tree = ast.parse(ACTOR_MAIN)
+    assignments = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Subscript)
+            and isinstance(t.slice, ast.Constant)
+            and t.slice.value == "x402_payment_verified"
+            for t in node.targets
+        )
+    ]
+    assert len(assignments) == 1, "the flag is set in more than one place"
+    assert isinstance(assignments[0].value, ast.Name), \
+        "the flag must come from a variable the charge set, not from the input"
+
+
+def test_the_actor_reuses_the_pipeline_rather_than_reimplementing_it():
+    """The point of the Actor is a second front door, not a second product. If
+    it ever stops importing the shared graph, the two surfaces can claim the
+    same guarantees while building differently."""
+    for shared in ("from src.graph.builder import build_graph",
+                   "from src.prd.schema import PRD",
+                   "from src.ports.generator import get_generator"):
+        assert shared in ACTOR_MAIN, f"the Actor no longer shares {shared!r}"
 
 
 def test_scripts_that_run_on_the_box_are_shipped_with_unix_endings():

@@ -1,0 +1,34 @@
+# The Apify Actor image. Deliberately `FROM appgen-base` rather than a copy of
+# the main Dockerfile: the toolchain layers — Flutter 3.44.8, Android SDK 36,
+# build-tools 36.0.0, JDK 17, all pinned to what the verification table was
+# proven on — are the expensive and fragile part, and maintaining two copies of
+# them is how the hosted service and the Actor drift into building against
+# different SDKs while both claim the same guarantees.
+#
+# Build it in two commands, so the cached base survives an Actor rebuild:
+#   docker build -t appgen-base .
+#   docker build -t appgen-actor -f Dockerfile.actor .
+#
+# On Apify, `dockerfile` in .actor/actor.json points here and the platform runs
+# a single build, so the base layers are rebuilt with it. That is the run this
+# has to fit inside Apify's 30-minute build timeout.
+ARG BASE_IMAGE=appgen-base
+FROM ${BASE_IMAGE}
+
+# The Actor SDK, on top of the dependencies the base already installed. Done as
+# root because the base image has already switched to `builder`, and pip cannot
+# write to the system site-packages as an unprivileged user — the same ordering
+# mistake the base image's own comments warn about.
+USER root
+RUN pip install --no-cache-dir "apify>=2.0.0" \
+    && python -c "import apify"
+USER builder
+
+# Apify gives an Actor a writable working directory but no mounted volume, so
+# builds go to /tmp rather than the /data/builds the hosted service uses.
+ENV BUILD_ROOT=/tmp/actor-build \
+    PYTHONUNBUFFERED=1
+
+# Runs once and exits, rather than serving. Everything else about the pipeline
+# is identical to the hosted service.
+CMD ["python", "-m", "src.actor.main"]
