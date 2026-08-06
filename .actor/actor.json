@@ -9,6 +9,7 @@
   },
   "dockerfile": "../Dockerfile.actor",
   "input": "./input_schema.json",
+  "readme": "./README.md",
   "storages": {
     "dataset": {
       "actorSpecification": 1,
