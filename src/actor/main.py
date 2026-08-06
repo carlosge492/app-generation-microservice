@@ -152,7 +152,11 @@ async def main() -> None:
                 Path(apk_path).read_bytes(),
                 content_type="application/vnd.android.package-archive",
             )
-            apk_url = store.get_public_url("app.apk")
+            # Awaited: this is a coroutine, and forgetting so put the string
+            # "<coroutine object ...>" in OUTPUT where the download link goes —
+            # a buyer who paid would have had the APK sitting in storage and no
+            # way to reach it.
+            apk_url = await store.get_public_url("app.apk")
         elif want_apk and paid:
             Actor.log.warning("Packaging was paid for but produced no APK.")
 

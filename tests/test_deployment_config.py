@@ -393,6 +393,37 @@ def test_the_actor_does_not_trust_the_callers_own_payment_flag():
         "the flag must come from a variable the charge set, not from the input"
 
 
+def test_every_async_apify_call_is_awaited():
+    """An un-awaited coroutine is silent in Python, and this one shipped.
+
+    `store.get_public_url(...)` without `await` put the literal string
+    "<coroutine object KeyValueStore.get_public_url at 0x...>" into OUTPUT where
+    the APK download link belongs. The run succeeded, the APK was really built
+    and really stored — and a buyer who paid for it would have had no way to
+    reach it. Nothing raised, nothing logged, and the status said SUCCEEDED.
+    """
+    tree = ast.parse(ACTOR_MAIN)
+
+    # Apify SDK methods used here that return coroutines.
+    async_methods = {
+        "get_input", "push_data", "set_value", "open_key_value_store",
+        "get_public_url", "charge", "set_status_message", "fail",
+    }
+
+    awaited = {
+        id(node.value) for node in ast.walk(tree)
+        if isinstance(node, ast.Await) and isinstance(node.value, ast.Call)
+    }
+    bare = [
+        ast.unparse(node) for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in async_methods
+        and id(node) not in awaited
+    ]
+    assert not bare, f"async Apify calls used without await: {bare}"
+
+
 def test_running_the_actor_module_actually_runs_it():
     """`python -m src.actor.main` must do something.
 
