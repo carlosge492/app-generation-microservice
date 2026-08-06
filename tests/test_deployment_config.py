@@ -297,6 +297,51 @@ def test_the_receiving_address_has_no_default():
 
 
 ACTOR_MAIN = (ROOT / "src" / "actor" / "main.py").read_text(encoding="utf-8")
+ACTOR_DOCKERFILE = (ROOT / "Dockerfile.actor").read_text(encoding="utf-8")
+
+
+def test_the_two_images_pin_the_same_toolchain():
+    """The Actor image duplicates the toolchain, so it can drift from the
+    service's.
+
+    It has to be self-contained: Apify builds it on its own runners and cannot
+    pull a base image that exists only on our machine. The cost of that is two
+    copies of the versions every compile claim in the README was proven
+    against. Two images on different SDKs would let the Actor and the hosted
+    service promise the same guarantee while building differently — and the
+    difference would surface as a buyer's APK failing, not as a failed build.
+    """
+    pinned = (
+        "FLUTTER_VERSION=3.44.8",
+        "platforms;android-36",
+        "build-tools;36.0.0",
+        "openjdk-17-jdk-headless",
+        "commandlinetools-linux-13114758_latest.zip",
+    )
+    for version in pinned:
+        assert version in DOCKERFILE, f"{version} vanished from Dockerfile"
+        assert version in ACTOR_DOCKERFILE, (
+            f"{version} is pinned in Dockerfile but not Dockerfile.actor; "
+            f"the Actor would build against a different toolchain"
+        )
+
+    # The assertions that catch a half-installed SDK, which `flutter doctor`
+    # does not: both images must keep them.
+    for guarded in ("build-tools/36.0.0/apksigner", "platforms/android-36"):
+        assert guarded in ACTOR_DOCKERFILE, f"the Actor image stopped asserting {guarded}"
+
+
+def test_the_actor_image_is_self_contained():
+    """`FROM appgen-base` builds locally and fails on Apify, which has no such
+    image — a mistake that only shows up at publish time, on their runners."""
+    first_from = next(
+        line for line in ACTOR_DOCKERFILE.splitlines()
+        if line.strip().startswith("FROM")
+    )
+    assert "appgen" not in first_from.lower(), (
+        f"the Actor image depends on a local base Apify cannot pull: {first_from}"
+    )
+    assert first_from.split()[1].startswith("python:"), first_from
 
 
 def test_the_actor_earns_the_packaging_flag_rather_than_asserting_it():
