@@ -1,0 +1,31 @@
+# What `apify push` must not upload.
+#
+# The CLI already excludes anything matched by .gitignore, so the secrets below
+# are covered twice over. They are repeated here deliberately: the cost of the
+# duplication is a few lines, and the cost of relying on one mechanism is
+# uploading a funded wallet's private key to a third party because someone
+# reorganised .gitignore. Belt and braces is the right trade at that ratio.
+.env
+.env.*
+.x402-*.json
+
+# Everything the Actor image does not build from. Dockerfile.actor copies
+# pyproject.toml, poetry.lock, README.md and src/ — nothing else is needed at
+# build time, and a smaller upload is a faster push.
+tests/
+evals/
+docs/
+scripts/
+deploy/
+emulator/
+generated_apps/
+examples/generated-field-notes/
+.github/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# The service's own image and compose stack. The Actor builds from
+# Dockerfile.actor and has no use for either.
+Dockerfile
+docker-compose.yml
