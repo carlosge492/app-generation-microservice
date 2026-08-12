@@ -1,53 +1,21 @@
 # App-Generation Microservice
 
 Takes a JSON Product Requirements Document and emits a compiled Flutter
-application. Built as a LangGraph loop with four subagents, a QA gate that runs
-the real Flutter toolchain, and an x402 payment gate in front of packaging.
+application. Built as a LangGraph loop with four subagents and a QA gate that
+runs the real Flutter toolchain.
 
 The design goal is not "generates plausible code" but **zero-error compilation**:
 if the output fails CI, the loop has failed.
 
-## Use it from Claude or Cursor — nothing to install
+## Run it
 
-Add this as an HTTP MCP server:
+**[PRD to Flutter APK on Apify Store](https://apify.com/vigorous_spit/prd-to-flutter-apk)**
+— generate and read the source for free; pay only for the packaged APK. No
+account beyond Apify's own, nothing to install.
 
-```
-https://37-27-249-33.sslip.io/mcp
-```
-
-**Try your own spec before paying anything.** `preview_build` runs the real
-pipeline on your document — same generator, same repair loop, same
-`flutter analyze` gate — and hands back the generated source. It just doesn't
-package it into an APK. That's what the money buys.
-
-`validate_prd`, `prd_schema` and `payment_terms` are free too. `start_build`
-buys the build: call it once to get quoted, sign, call again. No account, no API
-key, no subscription — **$3.00 USDC per build**, paid on the spot via
-[x402](https://x402.gitbook.io/x402/) and settled on-chain before the build
-starts. Nothing recurring; pay only for the app you actually take away.
-
-Previews are rate limited, because each one spends real model tokens on the
-operator's account.
-
-Prefer curl? Same service, plain HTTP:
-
-```bash
-# Generate the app from your own spec, free. Returns a job id; the source
-# lands at /builds/{id}/files when it finishes.
-curl -X POST https://37-27-249-33.sslip.io/preview \
-     -H 'Content-Type: application/json' -d @examples/todo_app.prd.json
-
-# Does my document build, and what would come out? Free, instant.
-curl -X POST https://37-27-249-33.sslip.io/validate \
-     -H 'Content-Type: application/json' -d @examples/todo_app.prd.json
-
-# What does it cost, and how do I sign for it?
-curl https://37-27-249-33.sslip.io/.well-known/x402
-```
-
-`/validate` runs the same validator the paid path runs, so a document it accepts
-will not be rejected after payment. A build that fails still returns its
-diagnostics, because payment settles first and a silent failure would be theft.
+*(An earlier version of this README pointed at a self-hosted x402 service on a
+VM. That deployment has been retired — the source and the payment-gate design
+it proved out are unchanged, just no longer running on that box.)*
 
 ## See what it produces, before paying
 
