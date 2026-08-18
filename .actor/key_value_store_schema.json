@@ -1,0 +1,19 @@
+{
+  "actorKeyValueStoreSchemaVersion": 1,
+  "title": "Build outputs",
+  "description": "The run summary, and the APK when the paid packaging step ran.",
+  "collections": {
+    "summary": {
+      "title": "Run summary",
+      "description": "Whether the analyser was clean, the diagnostics if it was not, the generated file count, and token usage.",
+      "key": "OUTPUT",
+      "contentTypes": ["application/json"]
+    },
+    "apk": {
+      "title": "Installable APK",
+      "description": "Produced only when apk-build was charged. A free source-only run leaves this absent.",
+      "key": "app.apk",
+      "contentTypes": ["application/vnd.android.package-archive"]
+    }
+  }
+}

@@ -436,6 +436,38 @@ def test_the_output_schema_points_at_things_the_actor_writes():
             assert view in views, f"template names view {view!r}, declared: {list(views)}"
 
 
+def test_the_key_value_store_schema_describes_keys_that_exist():
+    """Optional on the publication checklist, but only worth adding if true.
+
+    It advertises what a run leaves behind, so a collection naming a key the
+    Actor never writes is a promise broken in the console rather than a missing
+    tick — worse than leaving the schema out. The live-view OpenAPI schema is
+    deliberately *not* provided: it describes an Actor serving HTTP from a
+    persistent web server, and this one runs once and exits.
+    """
+    actor = json.loads((ROOT / ".actor" / "actor.json").read_text(encoding="utf-8"))
+    reference = actor.get("storages", {}).get("keyValueStore")
+    assert reference, "actor.json does not reference a key-value store schema"
+
+    schema = json.loads(
+        (ROOT / ".actor" / str(reference).lstrip("./")).read_text(encoding="utf-8")
+    )
+    assert schema.get("actorKeyValueStoreSchemaVersion") == 1
+    assert schema.get("title") and schema.get("collections")
+
+    main = (ROOT / "src" / "actor" / "main.py").read_text(encoding="utf-8")
+    for name, collection in schema["collections"].items():
+        assert collection.get("title"), name
+        # Exactly one of key/keyPrefix, per the spec.
+        assert bool(collection.get("key")) != bool(collection.get("keyPrefix")), (
+            f"{name} must set exactly one of key or keyPrefix"
+        )
+        if key := collection.get("key"):
+            assert f'"{key}"' in main, (
+                f"the schema advertises {key!r} but nothing in main.py writes it"
+            )
+
+
 def test_every_async_apify_call_is_awaited():
     """An un-awaited coroutine is silent in Python, and this one shipped.
 

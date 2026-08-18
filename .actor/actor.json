@@ -12,6 +12,7 @@
   "readme": "./README.md",
   "output": "./output_schema.json",
   "storages": {
+    "keyValueStore": "./key_value_store_schema.json",
     "dataset": {
       "actorSpecification": 1,
       "title": "Generated files",
