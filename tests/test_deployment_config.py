@@ -415,6 +415,12 @@ def test_the_output_schema_points_at_things_the_actor_writes():
 
     main = (ROOT / "src" / "actor" / "main.py").read_text(encoding="utf-8")
     for name, prop in schema["properties"].items():
+        # `type` is required by Apify's validator and absent from the example in
+        # their docs, so the first version of this schema was rejected at build
+        # time — 0-second failure, before the image is even attempted. Asserted
+        # here because a test that only encodes what the docs showed passes
+        # while the platform refuses the build.
+        assert prop.get("type"), f"{name} has no 'type'; Apify's validator requires it"
         assert prop.get("title") and prop.get("template"), name
         template = prop["template"]
         # A key-value record referenced here has to be one main.py stores.

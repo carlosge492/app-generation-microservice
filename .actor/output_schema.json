@@ -3,16 +3,19 @@
   "title": "Generated Flutter app",
   "properties": {
     "source": {
+      "type": "string",
       "title": "Generated source files",
       "description": "Every file the pipeline wrote, one record per file, with its full contents.",
       "template": "{{links.apiDefaultDatasetUrl}}/items?view=overview"
     },
     "summary": {
+      "type": "string",
       "title": "Run summary",
       "description": "Whether the analyser was clean, the diagnostics if not, and the APK link when one was packaged.",
       "template": "{{links.apiDefaultKeyValueStoreUrl}}/records/OUTPUT"
     },
     "apk": {
+      "type": "string",
       "title": "Installable APK",
       "description": "Present only when the paid apk-build step ran. Absent on a free source-only run.",
       "template": "{{links.apiDefaultKeyValueStoreUrl}}/records/app.apk"
