@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import io
+import json
 import re
 import subprocess
 import sys
@@ -391,6 +392,42 @@ def test_the_actor_does_not_trust_the_callers_own_payment_flag():
     assert len(assignments) == 1, "the flag is set in more than one place"
     assert isinstance(assignments[0].value, ast.Name), \
         "the flag must come from a variable the charge set, not from the input"
+
+
+def test_the_output_schema_points_at_things_the_actor_writes():
+    """The Store's publication checklist requires an output schema, and an
+    incomplete checklist leaves the Actor unlisted — `isPublic` goes true while
+    it stays absent from search and category browse, reachable only by direct
+    link. That is how this one shipped invisible for twelve days.
+
+    Pointing the schema at a key nothing writes would satisfy the checklist and
+    still hand users a dead link, so each template is checked against the code
+    that produces it.
+    """
+    actor = json.loads((ROOT / ".actor" / "actor.json").read_text(encoding="utf-8"))
+    assert actor.get("output"), "actor.json does not declare an output schema"
+
+    schema = json.loads(
+        (ROOT / ".actor" / actor["output"].lstrip("./")).read_text(encoding="utf-8")
+    )
+    for field in ("actorOutputSchemaVersion", "title", "properties"):
+        assert field in schema, f"output schema is missing {field}"
+
+    main = (ROOT / "src" / "actor" / "main.py").read_text(encoding="utf-8")
+    for name, prop in schema["properties"].items():
+        assert prop.get("title") and prop.get("template"), name
+        template = prop["template"]
+        # A key-value record referenced here has to be one main.py stores.
+        if "/records/" in template:
+            key = template.rsplit("/records/", 1)[1]
+            assert f'"{key}"' in main, (
+                f"output schema offers {key!r} but nothing in main.py writes it"
+            )
+        # A dataset view referenced here has to exist in actor.json.
+        if "view=" in template:
+            view = template.rsplit("view=", 1)[1]
+            views = actor.get("storages", {}).get("dataset", {}).get("views", {})
+            assert view in views, f"template names view {view!r}, declared: {list(views)}"
 
 
 def test_every_async_apify_call_is_awaited():
